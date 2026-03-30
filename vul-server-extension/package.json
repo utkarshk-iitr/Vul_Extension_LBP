@@ -1,0 +1,134 @@
+{
+  "name": "vul-server-extension",
+  "displayName": "Vul Server Extension",
+  "description": "Analyze active code for vulnerabilities using local Python or SSH backend.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:vulExtension.analyzeActiveEditor",
+    "onCommand:vulExtension.runNormalAnalysis",
+    "onCommand:vulExtension.startServer",
+    "onCommand:vulExtension.stopServer"
+  ],
+  "main": "extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "vulExtension.analyzeActiveEditor",
+        "title": "Vul Extension: Analyze Active Editor",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "vulExtension.runNormalAnalysis",
+        "title": "Vul Extension: Run Normal Analysis"
+      },
+      {
+        "command": "vulExtension.startServer",
+        "title": "Vul Server: Start"
+      },
+      {
+        "command": "vulExtension.stopServer",
+        "title": "Vul Server: Stop"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "vulExtension.analyzeActiveEditor",
+          "group": "navigation@8",
+          "when": "editorTextFocus"
+        }
+      ]
+    },
+    "configuration": {
+      "type": "object",
+      "title": "Vul Server",
+      "properties": {
+        "vulServer.executionMode": {
+          "type": "string",
+          "enum": ["local", "ssh"],
+          "default": "local",
+          "description": "Run inference locally or on a remote backend via SSH"
+        },
+        "vulServer.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Python executable used for local inference"
+        },
+        "vulServer.localScriptPath": {
+          "type": "string",
+          "default": "sing_code.py",
+          "description": "Path to local inference script, relative to workspace root or absolute"
+        },
+        "vulServer.localScriptPathNormal": {
+          "type": "string",
+          "default": "sing_code.py",
+          "description": "Path to local normal analysis script"
+        },
+        "vulServer.sshHost": {
+          "type": "string",
+          "default": "10.13.2.9",
+          "description": "SSH backend host"
+        },
+        "vulServer.sshPort": {
+          "type": "number",
+          "default": 22,
+          "description": "SSH backend port"
+        },
+        "vulServer.sshUser": {
+          "type": "string",
+          "default": "mithliesh",
+          "description": "SSH backend username"
+        },
+        "vulServer.remotePythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Python executable on remote backend"
+        },
+        "vulServer.remoteScriptPath": {
+          "type": "string",
+          "default": "/home/mithilesh/Desktop/vul_extension/sing_code.py",
+          "description": "Absolute path to inference script on remote backend"
+        },
+        "vulServer.remoteScriptPathNormal": {
+          "type": "string",
+          "default": "/home/mithilesh/Desktop/vul_extension/sing_code.py",
+          "description": "Absolute path to remote normal analysis script"
+        },
+        "vulServer.allowSshPassword": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow password auth through sshpass (fallback). Prefer SSH keys."
+        },
+        "vulServer.serverBindHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Interface for TCP server bind. Use 127.0.0.1 to block external clients."
+        },
+        "vulServer.serverAuthToken": {
+          "type": "string",
+          "default": "",
+          "description": "Optional shared token required for TCP server requests"
+        },
+        "vulServer.requestTimeoutMs": {
+          "type": "number",
+          "default": 180000,
+          "description": "Timeout for each inference request in milliseconds"
+        },
+        "vulServer.showRawJson": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show full JSON response in output channel"
+        },
+        "vulServer.port": {
+          "type": "number",
+          "default": 8765,
+          "description": "TCP port for the server to listen on"
+        }
+      }
+    }
+  }
+}
