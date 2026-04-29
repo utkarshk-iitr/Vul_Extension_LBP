@@ -10,6 +10,7 @@
     "onStartupFinished",
     "onCommand:vulExtension.analyzeActiveEditor",
     "onCommand:vulExtension.runNormalAnalysis",
+    "onCommand:vulExtension.applySuggestedFix",
     "onCommand:vulExtension.startServer",
     "onCommand:vulExtension.stopServer"
   ],
@@ -26,6 +27,11 @@
         "title": "Vul Extension: Run Normal Analysis"
       },
       {
+        "command": "vulExtension.applySuggestedFix",
+        "title": "Vul Extension: Apply Suggested Fix",
+        "icon": "$(tools)"
+      },
+      {
         "command": "vulExtension.startServer",
         "title": "Vul Server: Start"
       },
@@ -39,6 +45,11 @@
         {
           "command": "vulExtension.analyzeActiveEditor",
           "group": "navigation@8",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "vulExtension.applySuggestedFix",
+          "group": "navigation@9",
           "when": "editorTextFocus"
         }
       ]
@@ -55,17 +66,17 @@
         },
         "vulServer.pythonPath": {
           "type": "string",
-          "default": "python3",
+          "default": "/home/mithilesh/miniconda3/envs/tensorgpu/bin/python",
           "description": "Python executable used for local inference"
         },
         "vulServer.localScriptPath": {
           "type": "string",
-          "default": "sing_code.py",
+          "default": "/home/mithilesh/Aadit_Utkarsh/vul_extension/inference_single_code.py",
           "description": "Path to local inference script, relative to workspace root or absolute"
         },
         "vulServer.localScriptPathNormal": {
           "type": "string",
-          "default": "sing_code.py",
+          "default": "inference_single_code.py",
           "description": "Path to local normal analysis script"
         },
         "vulServer.sshHost": {
@@ -90,12 +101,12 @@
         },
         "vulServer.remoteScriptPath": {
           "type": "string",
-          "default": "/home/mithilesh/Desktop/vul_extension/sing_code.py",
+          "default": "/home/mithilesh/Desktop/vul_extension/inference_single_code.py",
           "description": "Absolute path to inference script on remote backend"
         },
         "vulServer.remoteScriptPathNormal": {
           "type": "string",
-          "default": "/home/mithilesh/Desktop/vul_extension/sing_code.py",
+          "default": "/home/mithilesh/Desktop/vul_extension/inference_single_code.py",
           "description": "Absolute path to remote normal analysis script"
         },
         "vulServer.allowSshPassword": {
@@ -117,6 +128,122 @@
           "type": "number",
           "default": 180000,
           "description": "Timeout for each inference request in milliseconds"
+        },
+        "vulServer.ragEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable retrieval-augmented findings for each vulnerable line"
+        },
+        "vulServer.ragTopK": {
+          "type": "number",
+          "default": 3,
+          "description": "Number of retrieval evidence items per vulnerable line"
+        },
+        "vulServer.ragMaxLines": {
+          "type": "number",
+          "default": 5,
+          "description": "Maximum vulnerable lines to enrich with RAG findings"
+        },
+        "vulServer.ragWindow": {
+          "type": "number",
+          "default": 4,
+          "description": "Context window size around each vulnerable line"
+        },
+        "vulServer.ragCache": {
+          "type": "boolean",
+          "default": true,
+          "description": "Cache RAG line-window findings during the extension session"
+        },
+        "vulServer.staticRulesEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable additional static-rule vulnerability detection to improve recall without retraining models"
+        },
+        "vulServer.staticMaxFindings": {
+          "type": "number",
+          "default": 6,
+          "description": "Maximum number of static-rule findings to merge per file"
+        },
+        "vulServer.ragBudgetMs": {
+          "type": "number",
+          "default": 25000,
+          "description": "Total time budget for the post-localization RAG stage in milliseconds"
+        },
+        "vulServer.cweCatalogUrl": {
+          "type": "string",
+          "default": "https://cwe.mitre.org/data/xml/cwec_latest.xml.zip",
+          "description": "CWE catalog source URL used by RAG retrieval (full MITRE catalog)"
+        },
+        "vulServer.cweCachePath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional local cache path for downloaded CWE catalog JSON"
+        },
+        "vulServer.cweRefreshHours": {
+          "type": "number",
+          "default": 168,
+          "description": "Hours before refreshing the cached CWE catalog"
+        },
+        "vulServer.llmEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable LLM generation for grounded explanation and fix guidance"
+        },
+        "vulServer.llmProvider": {
+          "type": "string",
+          "enum": ["ollama"],
+          "default": "ollama",
+          "description": "LLM provider used for RAG explanation generation"
+        },
+        "vulServer.ollamaUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434/api/generate",
+          "description": "Local Ollama generate endpoint used for offline mode"
+        },
+        "vulServer.ollamaCloudUrl": {
+          "type": "string",
+          "default": "https://ollama.com/api/generate",
+          "description": "Optional Ollama Cloud generate endpoint used when cloud mode is enabled"
+        },
+        "vulServer.ollamaApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API key sent as Bearer token for Ollama Cloud"
+        },
+        "vulServer.ollamaModel": {
+          "type": "string",
+          "default": "deepseek-coder:latest",
+          "description": "Primary local/offline model used for grounded vulnerability guidance"
+        },
+        "vulServer.useCloudModel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prefer cloud model for stronger multi-line reasoning and larger-parameter generation"
+        },
+        "vulServer.ollamaCloudModel": {
+          "type": "string",
+          "default": "gpt-oss:120b",
+          "description": "Primary cloud model used for vulnerability reasoning and patch generation"
+        },
+        "vulServer.ollamaLocalFallbacks": {
+          "type": "string",
+          "default": "deepseek-coder:latest,qwen3-coder:latest,gpt-oss:20b",
+          "description": "Comma-separated local fallback models (in order) for offline runs"
+        },
+        "vulServer.ollamaCloudFallbacks": {
+          "type": "string",
+          "default": "gpt-oss:120b",
+          "description": "Comma-separated cloud fallback models (in order) for higher-parameter inference"
+        },
+        "vulServer.llmTimeoutMs": {
+          "type": "number",
+          "default": 8000,
+          "description": "Per-line timeout for LLM guidance generation"
+        },
+        "vulServer.llmTemperature": {
+          "type": "number",
+          "default": 0.1,
+          "description": "LLM generation temperature for explanation and fix suggestions"
         },
         "vulServer.showRawJson": {
           "type": "boolean",

@@ -10,6 +10,7 @@ It supports two execution modes:
 
 - Vul Extension: Analyze Active Editor
 - Vul Extension: Run Normal Analysis
+- Vul Extension: Apply Suggested Fix
 - Vul Server: Start
 - Vul Server: Stop
 
@@ -21,18 +22,25 @@ Analyze Active Editor command:
 3. Parses JSON from stdout.
 4. Highlights vulnerable lines with red underline in the active editor.
 5. Updates shield status bar button with latest vulnerability probability.
-6. Shows summary notification and full JSON in output channel.
+6. Shows summary notification and run details in output channel.
+7. If findings exist, offers a Choose Fix action.
 
-Editor toolbar button:
-- A shield icon appears in the top-right editor toolbar.
-- Clicking it runs Vulnerability Analysis on the active editor.
+Apply Suggested Fix command:
+1. Opens a picker for findings from the latest analysis of the current file.
+2. Lets user choose one of the generated fix suggestions.
+3. Calls the configured Ollama endpoint (cloud-first model selection) to generate structured patch candidates for the selected finding.
+4. Shows patch candidates for selection, then asks explicit approval before applying any edit.
+5. Offers a one-click re-run of analysis after the edit.
+
+## UI Elements
+
+Editor toolbar buttons:
+- Shield icon: run vulnerability analysis on active editor.
+- Tools icon: open suggested fix picker for latest findings.
 
 Status bar button:
-- A single shield icon appears in the status bar.
-- Clicking it runs normal vulnerability analysis.
-- After each run it shows the latest vulnerability probability percentage.
-
-No shared code_input.txt file is required.
+- Shield icon displays last vulnerability probability.
+- Click to run normal vulnerability analysis.
 
 ## Extension Settings
 
@@ -50,7 +58,28 @@ No shared code_input.txt file is required.
 - vulServer.serverBindHost: TCP server bind interface
 - vulServer.serverAuthToken: optional token for TCP server auth
 - vulServer.requestTimeoutMs: request timeout
-- vulServer.showRawJson: print full JSON in output channel
+- vulServer.ragEnabled: enable retrieval-augmented findings
+- vulServer.ragTopK: retrieval evidence count per line
+- vulServer.ragMaxLines: max enriched vulnerable lines
+- vulServer.ragWindow: context window around each vulnerable line
+- vulServer.ragCache: cache RAG findings in current extension session
+- vulServer.staticRulesEnabled: enable additional static-rule findings
+- vulServer.staticMaxFindings: max static findings merged per file
+- vulServer.ragBudgetMs: total RAG stage budget
+- vulServer.llmEnabled: enable LLM explanation/fix generation
+- vulServer.llmProvider: LLM backend provider
+- vulServer.ollamaUrl: local ollama endpoint
+- vulServer.ollamaCloudUrl: cloud ollama endpoint
+- vulServer.ollamaApiKey: optional cloud API key
+- vulServer.ollamaModel: primary local model
+- vulServer.useCloudModel: use cloud model preference
+- vulServer.ollamaCloudModel: primary cloud model
+- vulServer.ollamaLocalFallbacks: local fallback models
+- vulServer.ollamaCloudFallbacks: cloud fallback models
+- vulServer.llmTimeoutMs: per-line LLM timeout
+- vulServer.llmTemperature: LLM temperature
+- vulServer.showRawJson: print full JSON response in output channel
+- vulServer.port: TCP server port
 
 ## Local Testing
 
@@ -63,6 +92,7 @@ Steps:
 2. Press F5 to launch Extension Development Host.
 3. Open a source file in the new window.
 4. Run command: Vul Extension: Analyze Active Editor.
+5. If findings are reported, click Choose Fix or run Vul Extension: Apply Suggested Fix.
 
 ## SSH Backend Testing
 
@@ -71,7 +101,6 @@ Recommended: SSH key authentication.
 If you must use password auth:
 - set vulServer.allowSshPassword = true
 - ensure sshpass is installed on local machine
-- extension prompts for password at run time and does not persist it
 
 Remote backend requirements:
 - remote host reachable via SSH
@@ -79,43 +108,17 @@ Remote backend requirements:
 - remote inference script path valid
 - script supports: --stdin --compact-json
 
-## Marketplace Readiness Notes
-
-Before publishing:
-1. Test local mode and ssh mode on clean machine.
-2. Add icon, categories, repository metadata to package.json.
-3. Add CHANGELOG.md and LICENSE.
-4. Package with vsce and run install test.
-
-## Deployment (Marketplace)
-
-1. Set package metadata in package.json: publisher, repository, icon, categories, keywords.
-2. Install packaging tool: npm install -g @vscode/vsce.
-3. Build package: vsce package.
-4. Publish: vsce publish.
-
-For production backend:
-- prefer SSH key auth over password.
-- configure remoteScriptPathNormal.
-
 ## Connection Model
 
 Local mode:
-- extension spawns python locally and streams active editor code via stdin.
+- extension spawns Python locally and streams active editor code via stdin.
 
 SSH mode:
-- extension opens SSH process and executes remote python script.
+- extension opens SSH process and executes remote Python script.
 - active editor code is piped to remote script stdin.
 
 No shared code_input.txt is required in either mode.
 
-## Can Any Client Connect To My Server?
-
-TCP server behavior:
-- if serverBindHost is 0.0.0.0, external clients can connect.
-- default serverBindHost is 127.0.0.1, so only local machine clients can connect.
-- if serverAuthToken is set, each TCP message must include token field.
-
 ## Legacy TCP Server
 
-The TCP server commands are still available for custom integrations.
+TCP server commands are still available for custom integrations.
