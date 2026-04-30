@@ -460,7 +460,8 @@ function tryParseJsonLoose(text) {
 }
 
 function getFixLlmConfig(config) {
-  const cloudUrl = normalizeOllamaGenerateUrl(config.get('vulServer.ollamaCloudUrl', '') || '');
+  const useCloud = config.get('vulServer.useCloudModel', true) === true;
+  const cloudUrl = useCloud ? normalizeOllamaGenerateUrl(config.get('vulServer.ollamaCloudUrl', '') || '') : '';
   const localUrl = normalizeOllamaGenerateUrl(config.get('vulServer.ollamaUrl', 'http://127.0.0.1:11434/api/generate') || '');
   const cloudModel = String(config.get('vulServer.ollamaCloudModel', 'qwen3-coder:cloud') || '').trim();
   const cloudFallbacks = splitCsvList(config.get('vulServer.ollamaCloudFallbacks', 'qwen3-coder:cloud,llama4:cloud,mistral-large:cloud'));

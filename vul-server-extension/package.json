@@ -71,7 +71,7 @@
         },
         "vulServer.localScriptPath": {
           "type": "string",
-          "default": "/home/mithilesh/Aadit_Utkarsh/vul_extension/inference_single_code.py",
+          "default": "/home/mithilesh/Aadit_Utkarsh/Vul_Extension_LBP/inference_single_code.py",
           "description": "Path to local inference script, relative to workspace root or absolute"
         },
         "vulServer.localScriptPathNormal": {
@@ -176,7 +176,7 @@
         },
         "vulServer.cweCachePath": {
           "type": "string",
-          "default": "",
+          "default": "/home/mithilesh/Desktop/vul_extension/cwe_catalog_cache.json",
           "description": "Optional local cache path for downloaded CWE catalog JSON"
         },
         "vulServer.cweRefreshHours": {
@@ -207,13 +207,8 @@
         },
         "vulServer.ollamaApiKey": {
           "type": "string",
-          "default": "",
+          "default": "9990718876ae4b8d8b18ef66b7dc26df.7cS83f_v5xcrWztbkjpZSnmo",
           "description": "Optional API key sent as Bearer token for Ollama Cloud"
-        },
-        "vulServer.ollamaModel": {
-          "type": "string",
-          "default": "deepseek-coder:latest",
-          "description": "Primary local/offline model used for grounded vulnerability guidance"
         },
         "vulServer.useCloudModel": {
           "type": "boolean",
@@ -222,18 +217,23 @@
         },
         "vulServer.ollamaCloudModel": {
           "type": "string",
-          "default": "gpt-oss:120b",
+          "default": "qwen3-coder:480b-cloud",
           "description": "Primary cloud model used for vulnerability reasoning and patch generation"
+        },
+        "vulServer.ollamaCloudFallbacks": {
+          "type": "string",
+          "default": "deepseek-v3.1:671b-cloud,gpt-oss:120b-cloud",
+          "description": "Comma-separated cloud fallback models (in order) for higher-parameter inference"
+        },
+        "vulServer.ollamaModel": {
+          "type": "string",
+          "default": "deepseek-coder:latest",
+          "description": "Primary local/offline model used for grounded vulnerability guidance"
         },
         "vulServer.ollamaLocalFallbacks": {
           "type": "string",
           "default": "deepseek-coder:latest,qwen3-coder:latest,gpt-oss:20b",
           "description": "Comma-separated local fallback models (in order) for offline runs"
-        },
-        "vulServer.ollamaCloudFallbacks": {
-          "type": "string",
-          "default": "gpt-oss:120b",
-          "description": "Comma-separated cloud fallback models (in order) for higher-parameter inference"
         },
         "vulServer.llmTimeoutMs": {
           "type": "number",
