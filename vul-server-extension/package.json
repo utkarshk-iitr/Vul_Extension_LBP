@@ -12,7 +12,9 @@
     "onCommand:vulExtension.runNormalAnalysis",
     "onCommand:vulExtension.applySuggestedFix",
     "onCommand:vulExtension.startServer",
-    "onCommand:vulExtension.stopServer"
+    "onCommand:vulExtension.stopServer",
+    "onCommand:vulExtension.startInferenceServer",
+    "onCommand:vulExtension.stopInferenceServer"
   ],
   "main": "extension.js",
   "contributes": {
@@ -38,6 +40,14 @@
       {
         "command": "vulExtension.stopServer",
         "title": "Vul Server: Stop"
+      },
+      {
+        "command": "vulExtension.startInferenceServer",
+        "title": "Vul Inference Server: Start"
+      },
+      {
+        "command": "vulExtension.stopInferenceServer",
+        "title": "Vul Inference Server: Stop"
       }
     ],
     "menus": {
@@ -237,7 +247,7 @@
         },
         "vulServer.llmTimeoutMs": {
           "type": "number",
-          "default": 8000,
+          "default": 120000,
           "description": "Per-line timeout for LLM guidance generation"
         },
         "vulServer.llmTemperature": {
@@ -254,6 +264,26 @@
           "type": "number",
           "default": 8765,
           "description": "TCP port for the server to listen on"
+        },
+        "vulServer.usePersistentServer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use a persistent Python inference server to avoid cold starts"
+        },
+        "vulServer.inferenceServerAutoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the persistent inference server when needed"
+        },
+        "vulServer.inferenceServerHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host for the persistent inference server"
+        },
+        "vulServer.inferenceServerPort": {
+          "type": "number",
+          "default": 9079,
+          "description": "Port for the persistent inference server"
         }
       }
     }

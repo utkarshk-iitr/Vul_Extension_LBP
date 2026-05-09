@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 let server = null;
@@ -19,6 +20,14 @@ const vulnerableLineDecoration = vscode.window.createTextEditorDecorationType({
 });
 
 let analyzeButton = null;
+let inferenceServerProcess = null;
+let inferenceServerStarting = false;
+let inferenceServerReady = false;
+let inferenceServerEnvKey = '';
+let inferenceServerHost = '127.0.0.1';
+let inferenceServerPort = 9079;
+const analysisCache = new Map();
+const MAX_ANALYSIS_CACHE = 50;
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) {
@@ -261,9 +270,9 @@ function buildRagEnv(config) {
   const useCloud = config.get('vulServer.useCloudModel', true);
   const ollamaModel = String(config.get('vulServer.ollamaModel', 'qwen2.5-coder:3b'));
   const cloudModel = String(config.get('vulServer.ollamaCloudModel', 'qwen3-coder:cloud'));
-  const localUrl = normalizeOllamaGenerateUrl(config.get('vulServer.ollamaUrl', 'http://127.0.0.1:11434/api/generate'));
+  const localUrl = Object.is(useCloud, false) ? normalizeOllamaGenerateUrl(config.get('vulServer.ollamaUrl', 'http://127.0.0.1:11434/api/generate')) : '';
   const cloudUrl = normalizeOllamaGenerateUrl(config.get('vulServer.ollamaCloudUrl', ''));
-  const selectedUrl = useCloud && cloudUrl ? cloudUrl : localUrl;
+  const selectedUrl = useCloud ? cloudUrl : localUrl;
   const apiKey = String(config.get('vulServer.ollamaApiKey', '')).trim();
   const localFallbacks = String(
     config.get('vulServer.ollamaLocalFallbacks', 'qwen2.5-coder:3b,mistral:7b-instruct,llama3.2:3b-instruct')
@@ -294,11 +303,220 @@ function buildRagEnv(config) {
     VUL_OLLAMA_CLOUD_MODEL: cloudModel,
     VUL_OLLAMA_MODEL_FALLBACKS: useCloud ? cloudFallbacks : localFallbacks,
     VUL_OLLAMA_MODEL: useCloud ? cloudModel : ollamaModel,
-    VUL_LLM_TIMEOUT_MS: String(config.get('vulServer.llmTimeoutMs', 8000)),
+    VUL_LLM_TIMEOUT_MS: String(config.get('vulServer.llmTimeoutMs', 120000)),
     VUL_LLM_TEMPERATURE: String(config.get('vulServer.llmTemperature', 0.1)),
     VUL_CWE_CATALOG_URL: cweCatalogUrl,
     VUL_CWE_CACHE_PATH: cweCachePath,
     VUL_CWE_REFRESH_HOURS: cweRefreshHours,
+  };
+}
+
+function hashText(value) {
+  return crypto.createHash('sha256').update(String(value || ''), 'utf8').digest('hex');
+}
+
+function buildAnalysisCacheKey(code, mode, ragEnv) {
+  const payload = JSON.stringify({ code, mode, ragEnv });
+  return hashText(payload);
+}
+
+function cacheAnalysisResult(key, result) {
+  if (!key) return;
+  analysisCache.set(key, { result, storedAt: Date.now() });
+  if (analysisCache.size > MAX_ANALYSIS_CACHE) {
+    const oldestKey = analysisCache.keys().next().value;
+    analysisCache.delete(oldestKey);
+  }
+}
+
+function getCachedAnalysis(key) {
+  if (!key) return null;
+  const entry = analysisCache.get(key);
+  return entry ? entry.result : null;
+}
+
+function getInferenceServerConfig(config) {
+  return {
+    enabled: config.get('vulServer.usePersistentServer', true),
+    autoStart: config.get('vulServer.inferenceServerAutoStart', true),
+    host: String(config.get('vulServer.inferenceServerHost', '127.0.0.1')),
+    port: Number(config.get('vulServer.inferenceServerPort', 9079)),
+  };
+}
+
+function buildInferenceServerEnvKey(pythonPath, scriptPath, ragEnv) {
+  return hashText(JSON.stringify({ pythonPath, scriptPath, ragEnv }));
+}
+
+function stopInferenceServer() {
+  if (inferenceServerProcess) {
+    inferenceServerProcess.kill('SIGTERM');
+    inferenceServerProcess = null;
+  }
+  inferenceServerReady = false;
+  inferenceServerStarting = false;
+}
+
+async function waitForServerReady(proc, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('Inference server startup timeout'));
+    }, timeoutMs);
+
+    const onData = (data) => {
+      const text = String(data || '');
+      if (text.includes('SERVER_READY')) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      }
+    };
+
+    proc.stdout.on('data', onData);
+    proc.stderr.on('data', onData);
+    proc.once('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+    proc.once('exit', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`Inference server exited early (code ${code})`));
+    });
+  });
+}
+
+async function startInferenceServer(root, config) {
+  const pythonPath = config.get('vulServer.pythonPath', '/home/mithilesh/miniconda3/envs/tensorgpu/bin/python');
+  const localScriptPath = getConfiguredLocalScript(config);
+  const ragEnv = buildRagEnv(config);
+  const found = findLocalScriptPath(root, localScriptPath);
+  const scriptPath = found.scriptPath;
+
+  if (!scriptPath || !fs.existsSync(scriptPath)) {
+    const tried = (found.tried || []).map((p) => `  - ${p}`).join('\n');
+    throw new Error(`Local script not found. Configured value='${localScriptPath}'. Tried:\n${tried}`);
+  }
+
+  const serverCfg = getInferenceServerConfig(config);
+  inferenceServerHost = serverCfg.host;
+  inferenceServerPort = serverCfg.port;
+  const envKey = buildInferenceServerEnvKey(pythonPath, scriptPath, ragEnv);
+
+  if (inferenceServerProcess && inferenceServerReady && inferenceServerEnvKey === envKey) {
+    return;
+  }
+
+  if (inferenceServerProcess) {
+    stopInferenceServer();
+  }
+
+  inferenceServerEnvKey = envKey;
+  inferenceServerStarting = true;
+  inferenceServerReady = false;
+
+  const args = [scriptPath, '--server', '--host', inferenceServerHost, '--port', String(inferenceServerPort)];
+  inferenceServerProcess = spawn(pythonPath, args, {
+    cwd: path.dirname(scriptPath),
+    env: { ...process.env, ...ragEnv },
+  });
+
+  await waitForServerReady(inferenceServerProcess, 60000);
+  inferenceServerReady = true;
+  inferenceServerStarting = false;
+}
+
+function sendServerRequest(payload, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const socket = new net.Socket();
+    let buffer = '';
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      reject(new Error(`Inference server timeout after ${timeoutMs} ms`));
+    }, timeoutMs);
+
+    socket.connect(inferenceServerPort, inferenceServerHost, () => {
+      socket.write(`${JSON.stringify(payload)}\n`);
+    });
+
+    socket.on('data', (data) => {
+      buffer += data.toString();
+      const idx = buffer.indexOf('\n');
+      if (idx >= 0) {
+        const line = buffer.slice(0, idx).trim();
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.destroy();
+        if (!line) {
+          reject(new Error('Empty response from inference server'));
+          return;
+        }
+        try {
+          resolve(JSON.parse(line));
+        } catch (err) {
+          reject(new Error(`Invalid response from inference server: ${err.message}`));
+        }
+      }
+    });
+
+    socket.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
+async function runLocalInferenceViaServer(root, code) {
+  const config = vscode.workspace.getConfiguration();
+  const serverCfg = getInferenceServerConfig(config);
+  if (!serverCfg.enabled) {
+    return runLocalInference(root, code);
+  }
+
+  const pythonPath = config.get('vulServer.pythonPath', '/home/mithilesh/miniconda3/envs/tensorgpu/bin/python');
+  const localScriptPath = getConfiguredLocalScript(config);
+  const ragEnv = buildRagEnv(config);
+  const found = findLocalScriptPath(root, localScriptPath);
+  const scriptPath = found.scriptPath || localScriptPath;
+  const envKey = buildInferenceServerEnvKey(pythonPath, scriptPath, ragEnv);
+  if (inferenceServerReady && inferenceServerEnvKey && inferenceServerEnvKey !== envKey) {
+    stopInferenceServer();
+  }
+
+  if (serverCfg.autoStart) {
+    if (!inferenceServerReady && !inferenceServerStarting) {
+      await startInferenceServer(root, config);
+    }
+  }
+
+  if (!inferenceServerReady) {
+    throw new Error('Inference server is not ready. Start it and try again.');
+  }
+
+  const timeoutMs = config.get('vulServer.requestTimeoutMs', 180000);
+  const response = await sendServerRequest({ code }, timeoutMs);
+  if (!response || response.ok !== true || !response.result) {
+    throw new Error(`Inference server error: ${JSON.stringify(response || {})}`);
+  }
+
+  return {
+    mode: 'local-server',
+    raw: { stdout: JSON.stringify(response.result), stderr: response.error || '', code: 0 },
+    json: response.result,
   };
 }
 
@@ -462,12 +680,12 @@ function tryParseJsonLoose(text) {
 function getFixLlmConfig(config) {
   const useCloud = config.get('vulServer.useCloudModel', true) === true;
   const cloudUrl = useCloud ? normalizeOllamaGenerateUrl(config.get('vulServer.ollamaCloudUrl', '') || '') : '';
-  const localUrl = normalizeOllamaGenerateUrl(config.get('vulServer.ollamaUrl', 'http://127.0.0.1:11434/api/generate') || '');
+  const localUrl = !useCloud ? normalizeOllamaGenerateUrl(config.get('vulServer.ollamaUrl', 'http://127.0.0.1:11434/api/generate') || '') : '';
   const cloudModel = String(config.get('vulServer.ollamaCloudModel', 'qwen3-coder:cloud') || '').trim();
   const cloudFallbacks = splitCsvList(config.get('vulServer.ollamaCloudFallbacks', 'qwen3-coder:cloud,llama4:cloud,mistral-large:cloud'));
   const localModel = String(config.get('vulServer.ollamaModel', 'qwen2.5-coder:3b') || '').trim();
   const localFallbacks = splitCsvList(config.get('vulServer.ollamaLocalFallbacks', 'qwen2.5-coder:3b,mistral:7b-instruct,llama3.2:3b-instruct'));
-  const timeoutMs = Math.max(1000, Number(config.get('vulServer.llmTimeoutMs', 8000)) || 8000);
+  const timeoutMs = Math.max(1000, Number(config.get('vulServer.llmTimeoutMs', 120000)) || 120000);
   const temperature = Number(config.get('vulServer.llmTemperature', 0.1)) || 0.1;
   const apiKey = String(config.get('vulServer.ollamaApiKey', '') || '').trim();
 
@@ -948,7 +1166,7 @@ async function runLocalInference(root, code) {
     if (!payload) return false;
     return payload.includes('cuda out of memory')
       || payload.includes('torch.outofmemoryerror')
-      || (payload.includes('out of memory') && payload.includes('cuda'));a 
+      || (payload.includes('out of memory') && payload.includes('cuda'));
   };
 
   const args = [scriptPath, '--stdin', '--compact-json'];
@@ -1094,9 +1312,17 @@ async function analyzeActiveEditor() {
           output.appendLine(`run_id=${runId} | status=started | mode=${mode}`);
 
         const started = Date.now();
-        const res = mode === 'ssh'
+        const ragEnv = buildRagEnv(config);
+        const cacheKey = buildAnalysisCacheKey(code, mode, ragEnv);
+        const cached = getCachedAnalysis(cacheKey);
+
+        const res = cached ? {
+          mode: 'cache',
+          raw: { stdout: JSON.stringify(cached), stderr: '', code: 0 },
+          json: cached,
+        } : (mode === 'ssh'
           ? await runSshInference(code)
-          : await runLocalInference(root, code);
+          : await runLocalInferenceViaServer(root, code));
         const elapsedMs = Date.now() - started;
 
         const p = typeof res.json.vulnerable_probability === 'number'
@@ -1132,6 +1358,10 @@ async function analyzeActiveEditor() {
         }
         output.appendLine('--- End of Run ---\n');
         output.show(true);
+
+        if (!cached) {
+          cacheAnalysisResult(cacheKey, res.json);
+        }
 
         lastAnalysisByUri.set(getAnalysisKey(editor.document), {
           ...res.json,
@@ -1284,12 +1514,31 @@ function activate(context) {
   const applyFix = vscode.commands.registerCommand('vulExtension.applySuggestedFix', () => applySuggestedFix());
   const start = vscode.commands.registerCommand('vulExtension.startServer', () => startServer(context));
   const stop = vscode.commands.registerCommand('vulExtension.stopServer', () => stopServer());
+  const startInference = vscode.commands.registerCommand('vulExtension.startInferenceServer', async () => {
+    const root = getWorkspaceRoot();
+    if (!root) {
+      vscode.window.showErrorMessage('No workspace folder open.');
+      return;
+    }
+    try {
+      await startInferenceServer(root, vscode.workspace.getConfiguration());
+      vscode.window.showInformationMessage('Inference server started.');
+    } catch (err) {
+      vscode.window.showErrorMessage(`Failed to start inference server: ${String(err && err.message ? err.message : err)}`);
+    }
+  });
+  const stopInference = vscode.commands.registerCommand('vulExtension.stopInferenceServer', () => {
+    stopInferenceServer();
+    vscode.window.showInformationMessage('Inference server stopped.');
+  });
   context.subscriptions.push(
     analyze,
     analyzeNormal,
     applyFix,
     start,
     stop,
+    startInference,
+    stopInference,
     analyzeButton,
     diagnostics,
     vulnerableLineDecoration,
@@ -1299,6 +1548,7 @@ function activate(context) {
 
 function deactivate() {
   stopServer();
+  stopInferenceServer();
 }
 
 module.exports = { activate, deactivate };

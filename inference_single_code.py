@@ -5,6 +5,7 @@ import os
 import sys
 import json
 import argparse
+import socketserver
 import tempfile
 import re
 import time
@@ -129,6 +130,12 @@ STATIC_VULN_RULES = [
     },
 ]
 RAG_CACHE = {}
+GRAPH_CACHE = {}
+GRAPH_CACHE_ORDER = []
+RESULT_CACHE = {}
+RESULT_CACHE_ORDER = []
+MAX_GRAPH_CACHE = 32
+MAX_RESULT_CACHE = 64
 CWE_CATALOG_STATE = {
     "entries": None,
     "source": "uninitialized",
@@ -255,6 +262,21 @@ def _write_json_file(path, payload):
         os.makedirs(os.path.dirname(path), exist_ok=True)
     except Exception:
         pass
+
+
+def _cache_put(cache, order, key, value, max_size):
+    if key in cache:
+        cache[key] = value
+        return
+    cache[key] = value
+    order.append(key)
+    if len(order) > max_size:
+        oldest = order.pop(0)
+        cache.pop(oldest, None)
+
+
+def _hash_code(raw_code):
+    return hashlib.sha256(str(raw_code).encode("utf-8")).hexdigest()
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=True)
@@ -1669,18 +1691,33 @@ def generate_graphs_via_joern(raw_code):
     return ast_repr, pdg_repr, cfg_repr
 
 
+def generate_graphs_cached(raw_code):
+    code_key = _hash_code(raw_code)
+    cached = GRAPH_CACHE.get(code_key)
+    if cached:
+        return cached
+    ast_repr, pdg_repr, cfg_repr = generate_graphs_via_joern(raw_code)
+    _cache_put(GRAPH_CACHE, GRAPH_CACHE_ORDER, code_key, (ast_repr, pdg_repr, cfg_repr), MAX_GRAPH_CACHE)
+    return ast_repr, pdg_repr, cfg_repr
+
+
 def parse_cli_args():
     parser = argparse.ArgumentParser(description="Single-code vulnerability inference")
-    group = parser.add_mutually_exclusive_group(required=True)
+    group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--raw-code", type=str, help="Raw source code as a string")
     group.add_argument("--code-file", type=str, help="Path to file containing source code")
     group.add_argument("--stdin", action="store_true", help="Read raw code from stdin")
     parser.add_argument("--output-file", type=str, default=None, help="Optional JSON output file path")
     parser.add_argument("--compact-json", action="store_true", help="Print compact JSON")
+    parser.add_argument("--server", action="store_true", help="Run as a persistent inference server")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Server bind host")
+    parser.add_argument("--port", type=int, default=9079, help="Server bind port")
     return parser.parse_args()
 
 
 def get_raw_code_from_args(args):
+    if args.server:
+        return ""
     if args.stdin:
         raw_code = sys.stdin.read()
     elif args.code_file:
@@ -1693,17 +1730,10 @@ def get_raw_code_from_args(args):
         raise ValueError("No input code provided. Use --stdin, --raw-code, or --code-file.")
     return raw_code
 
-def main():
-    args = parse_cli_args()
-    try:
-        raw_code = get_raw_code_from_args(args)
-    except Exception as exc:
-        print(json.dumps({"error": str(exc)}))
-        sys.exit(1)
 
-    # Generate graphs
+def build_json_output(raw_code):
     try:
-        ast_repr, pdg_repr, cfg_repr = generate_graphs_via_joern(raw_code)
+        ast_repr, pdg_repr, cfg_repr = generate_graphs_cached(raw_code)
     except Exception:
         ast_repr = "AST_GEN_ERROR"
         pdg_repr = "PDG_GEN_ERROR"
@@ -1711,13 +1741,68 @@ def main():
 
     result = predict_vulnerability(raw_code, ast_repr, pdg_repr, cfg_repr)
 
-    json_output = {
+    return {
         "vulnerable_probability": result["vulnerable_probability"],
         "vulnerable_lines": result["vulnerable_lines"],
         "detection_method": result.get("detection_method", "none"),
         "findings": result.get("findings", []),
         "rag_metadata": result.get("rag_metadata", {}),
     }
+
+
+class InferenceRequestHandler(socketserver.StreamRequestHandler):
+    def handle(self):
+        line = self.rfile.readline()
+        if not line:
+            return
+
+        try:
+            payload = json.loads(line.decode("utf-8"))
+        except Exception:
+            self.wfile.write(json.dumps({"ok": False, "error": "invalid_json"}).encode("utf-8") + b"\n")
+            return
+
+        if payload.get("ping") is True:
+            self.wfile.write(json.dumps({"ok": True, "pong": True}).encode("utf-8") + b"\n")
+            return
+
+        raw_code = str(payload.get("code", ""))
+        if not raw_code.strip():
+            self.wfile.write(json.dumps({"ok": False, "error": "empty_code"}).encode("utf-8") + b"\n")
+            return
+
+        code_key = _hash_code(raw_code)
+        cached = RESULT_CACHE.get(code_key)
+        if cached:
+            self.wfile.write(json.dumps({"ok": True, "result": cached}).encode("utf-8") + b"\n")
+            return
+
+        result = build_json_output(raw_code)
+        _cache_put(RESULT_CACHE, RESULT_CACHE_ORDER, code_key, result, MAX_RESULT_CACHE)
+        self.wfile.write(json.dumps({"ok": True, "result": result}).encode("utf-8") + b"\n")
+
+
+def run_server(host, port):
+    class ThreadedTCPServer(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+
+    with ThreadedTCPServer((host, int(port)), InferenceRequestHandler) as server:
+        print(f"SERVER_READY {host}:{port}", flush=True)
+        server.serve_forever()
+
+def main():
+    args = parse_cli_args()
+    if args.server:
+        run_server(args.host, args.port)
+        return
+
+    try:
+        raw_code = get_raw_code_from_args(args)
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}))
+        sys.exit(1)
+
+    json_output = build_json_output(raw_code)
     if args.compact_json:
         print(json.dumps(json_output, separators=(",", ":")))
     else:
