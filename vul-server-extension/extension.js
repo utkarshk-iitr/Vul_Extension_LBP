@@ -337,7 +337,6 @@ function getCachedAnalysis(key) {
 
 function getInferenceServerConfig(config) {
   return {
-    enabled: config.get('vulServer.usePersistentServer', true),
     autoStart: config.get('vulServer.inferenceServerAutoStart', true),
     host: String(config.get('vulServer.inferenceServerHost', '127.0.0.1')),
     port: Number(config.get('vulServer.inferenceServerPort', 9079)),
@@ -483,9 +482,6 @@ function sendServerRequest(payload, timeoutMs) {
 async function runLocalInferenceViaServer(root, code) {
   const config = vscode.workspace.getConfiguration();
   const serverCfg = getInferenceServerConfig(config);
-  if (!serverCfg.enabled) {
-    return runLocalInference(root, code);
-  }
 
   const pythonPath = config.get('vulServer.pythonPath', '/home/mithilesh/miniconda3/envs/tensorgpu/bin/python');
   const localScriptPath = getConfiguredLocalScript(config);
@@ -623,7 +619,6 @@ function safeJsonParse(text) {
   try {
     return JSON.parse(trimmed);
   } catch (_) {
-    // Try extracting JSON object boundaries from noisy output
     const first = trimmed.indexOf('{');
     const last = trimmed.lastIndexOf('}');
     if (first >= 0 && last > first) {
@@ -1138,6 +1133,10 @@ async function applySuggestedFix() {
     return;
   }
 
+  clearVulnerabilityHighlights(editor);
+  lastAnalysisByUri.delete(getAnalysisKey(editor.document));
+  updateStatusBarButton();
+
   const rerun = await vscode.window.showInformationMessage(
     `Applied fix using ${fixGeneration.usingCloud ? 'Ollama Cloud' : 'Ollama endpoint'} model ${fixGeneration.modelName}.`,
     'Re-run Analysis'
@@ -1145,71 +1144,6 @@ async function applySuggestedFix() {
   if (rerun === 'Re-run Analysis') {
     await vscode.commands.executeCommand('vulExtension.analyzeActiveEditor');
   }
-}
-
-async function runLocalInference(root, code) {
-  const config = vscode.workspace.getConfiguration();
-  const pythonPath = config.get('vulServer.pythonPath', '/home/mithilesh/miniconda3/envs/tensorgpu/bin/python');
-  const localScriptPath = getConfiguredLocalScript(config);
-  const timeoutMs = config.get('vulServer.requestTimeoutMs', 180000);
-  const ragEnv = buildRagEnv(config);
-  const found = findLocalScriptPath(root, localScriptPath);
-  const scriptPath = found.scriptPath;
-
-  if (!scriptPath || !fs.existsSync(scriptPath)) {
-    const tried = (found.tried || []).map((p) => `  - ${p}`).join('\n');
-    throw new Error(`Local script not found. Configured value='${localScriptPath}'. Tried:\n${tried}`);
-  }
-
-  const isCudaOomError = (text) => {
-    const payload = String(text || '').toLowerCase();
-    if (!payload) return false;
-    return payload.includes('cuda out of memory')
-      || payload.includes('torch.outofmemoryerror')
-      || (payload.includes('out of memory') && payload.includes('cuda'));
-  };
-
-  const args = [scriptPath, '--stdin', '--compact-json'];
-  const baseEnv = { ...process.env, ...ragEnv };
-  let result = await runProcessWithInput(pythonPath, args, code, {
-    cwd: path.dirname(scriptPath),
-    timeoutMs,
-    env: baseEnv,
-  });
-
-  if (result.code !== 0 && isCudaOomError(`${result.stderr || ''}\n${result.stdout || ''}`)) {
-    output.appendLine('--- Vul Extension Run ---');
-    output.appendLine('CUDA OOM detected in local inference; retrying once with CPU fallback.');
-    output.appendLine('--- End of Run ---\n');
-
-    result = await runProcessWithInput(pythonPath, args, code, {
-      cwd: path.dirname(scriptPath),
-      timeoutMs,
-      env: {
-        ...baseEnv,
-        VUL_FORCE_CPU: '1',
-        CUDA_VISIBLE_DEVICES: '',
-      },
-    });
-
-    if (result.code === 0) {
-      return {
-        mode: 'local-cpu-fallback',
-        raw: result,
-        json: safeJsonParse(result.stdout),
-      };
-    }
-  }
-
-  if (result.code !== 0) {
-    throw new Error(`Local inference failed (exit ${result.code}): ${result.stderr || result.stdout}`);
-  }
-
-  return {
-    mode: 'local',
-    raw: result,
-    json: safeJsonParse(result.stdout),
-  };
 }
 
 function buildSshArgs(host, port, user, remoteCmd) {
@@ -1482,7 +1416,7 @@ async function handleMessage(msg, root, inputDir, outputDir, socket, serverToken
     const inputPath = path.join(inputDir, filename);
     fs.writeFileSync(inputPath, code, { encoding: 'utf8' });
 
-    const runResult = await runLocalInference(root, code);
+    const runResult = await runLocalInferenceViaServer(root, code);
     const stamped = path.join(outputDir, `vul_output_${Date.now()}.json`);
     fs.writeFileSync(stamped, JSON.stringify(runResult.json, null, 2), 'utf8');
 
@@ -1509,8 +1443,14 @@ function activate(context) {
 
   updateStatusBarButton();
 
-  const analyze = vscode.commands.registerCommand('vulExtension.analyzeActiveEditor', () => analyzeActiveEditor());
-  const analyzeNormal = vscode.commands.registerCommand('vulExtension.runNormalAnalysis', () => analyzeActiveEditor());
+  const analyze = vscode.commands.registerCommand('vulExtension.analyzeActiveEditor', async () => {
+    startServer(context);
+    await analyzeActiveEditor();
+  });
+  const analyzeNormal = vscode.commands.registerCommand('vulExtension.runNormalAnalysis', async () => {
+    startServer(context);
+    await analyzeActiveEditor();
+  });
   const applyFix = vscode.commands.registerCommand('vulExtension.applySuggestedFix', () => applySuggestedFix());
   const start = vscode.commands.registerCommand('vulExtension.startServer', () => startServer(context));
   const stop = vscode.commands.registerCommand('vulExtension.stopServer', () => stopServer());

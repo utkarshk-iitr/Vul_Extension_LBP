@@ -265,11 +265,6 @@
           "default": 8765,
           "description": "TCP port for the server to listen on"
         },
-        "vulServer.usePersistentServer": {
-          "type": "boolean",
-          "default": true,
-          "description": "Use a persistent Python inference server to avoid cold starts"
-        },
         "vulServer.inferenceServerAutoStart": {
           "type": "boolean",
           "default": true,

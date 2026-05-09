@@ -22,7 +22,7 @@ Local mode can use a persistent inference server to avoid cold starts and keep c
 
 Analyze Active Editor command:
 1. Reads full text from active editor.
-2. Sends code to the persistent inference server (or to a one-shot Python process if disabled).
+2. Ensures Vul Server is started, then sends code to the persistent inference server.
 3. Parses JSON from stdout.
 4. Highlights vulnerable lines with red underline in the active editor.
 5. Updates shield status bar button with latest vulnerability probability.
@@ -84,7 +84,6 @@ Status bar button:
 - vulServer.llmTemperature: LLM temperature
 - vulServer.showRawJson: print full JSON response in output channel
 - vulServer.port: TCP server port
-- vulServer.usePersistentServer: keep a Python server warm for faster analysis
 - vulServer.inferenceServerAutoStart: auto-start the inference server when needed
 - vulServer.inferenceServerHost: host for the inference server
 - vulServer.inferenceServerPort: port for the inference server
@@ -102,7 +101,7 @@ Status bar button:
 	- vulServer.executionMode = local
 	- vulServer.pythonPath = /path/to/python
 	- vulServer.localScriptPath = /path/to/inference_single_code.py
-	- vulServer.usePersistentServer = true
+	- vulServer.inferenceServerAutoStart = true
 9. Run command: Vul Extension: Analyze Active Editor.
 10. If prompted, start the inference server via Vul Inference Server: Start.
 
@@ -110,10 +109,9 @@ Status bar button:
 
 Recommended for performance.
 
-1. Ensure vulServer.usePersistentServer = true.
-2. Keep vulServer.inferenceServerAutoStart = true.
-3. Run Vul Extension: Analyze Active Editor.
-4. The extension will start the Python server once and reuse it for future requests.
+1. Keep vulServer.inferenceServerAutoStart = true.
+2. Run Vul Extension: Analyze Active Editor.
+3. The extension will start the Python server once and reuse it for future requests.
 
 ## Local Testing
 
