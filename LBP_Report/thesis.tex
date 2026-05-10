@@ -1,0 +1,245 @@
+\documentclass[11pt, english, onehalfspacing, headsepline,oneside]{MastersDoctoralThesis}
+% \usepackage{times} % sets times new roman font
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{etoolbox}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+
+% \usepackage{palatino} % Use the Palatino font by default
+\usepackage{graphicx}
+\usepackage{lmodern}
+
+\usepackage{amstext,amssymb,bm}
+\usepackage{mathtools}
+\usepackage{enumitem}
+
+\usepackage{mathpazo}
+\usepackage{amsmath}
+\usepackage{listings}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+  commentstyle=\color{codegreen},
+  keywordstyle=\color{blue},
+  numberstyle=\tiny\ttfamily\color{codegray},
+  stringstyle=\color{codepurple},
+  basicstyle=\ttfamily\tiny,
+  breakatwhitespace=false,
+  breaklines=true,
+  captionpos=b,
+  keepspaces=false,
+  numbers=left,
+  numbersep=6pt,
+  showspaces=false,
+  showstringspaces=false,
+  showtabs=false,
+  tabsize=2
+}
+
+\lstset{style=mystyle, basicstyle = \ttfamily \footnotesize, basewidth  = {0.5em,0.5em}, xleftmargin=0.3cm}
+\usepackage{float}
+\usepackage[numbers]{natbib}
+\usepackage[bookmarks=true,colorlinks=true,linkcolor=blue,citecolor=red]{hyperref}
+\usepackage{url}
+\pdfstringdefDisableCommands{\let\uppercase\relax}
+
+\makeatletter
+\AtBeginDocument{\def\@citecolor{blue}}
+\makeatother
+
+\usepackage[nameinlink,capitalize]{cleveref}
+\usepackage{algorithm, algpseudocode}
+\providecommand\algorithmname{algorithm}
+
+\makeatletter
+\newcounter{algorithmicH}
+\let\oldalgorithmic\algorithmic
+\renewcommand{\algorithmic}{\stepcounter{algorithmicH}\oldalgorithmic}
+\renewcommand{\theHALG@line}{ALG@line.\thealgorithmicH.\arabic{ALG@line}}
+\makeatother
+
+\thesistitle{VulGuard : Vulnerability Detection and Resolution Tool}
+\author{\textbf{Aadit Kumar Sahoo} 23114001 \\
+\textbf{Utkarsh Kumar} 23114101 \\}
+\supervisor{\href{https://iitr.ac.in/~CSE/Sandeep}{Dr. Sandeep Kumar Garg}}
+\supervisortitle{\href{https://iitr.ac.in/~CSE/Sandeep}{Dr. Sandeep Kumar Garg}}
+\cosupervisor{}
+\cosupervisortitle{}
+\degree{Lab Based Project Report}
+\subject{CSC-300}
+\duration{January, 2026 to May, 2026}
+\group{}
+\department{\href{https://iitr.ac.in}{Department of Computer Science and Engineering}}
+\university{\href{https://iitr.ac.in/}{Indian Institute of Technology Roorkee}}
+\addresses{Roorkee - 247667 (INDIA)}
+\reporttype{Lab Based Project Report}
+\examiner{}
+\keywords{}
+\AtBeginDocument{
+\hypersetup{pdftitle=\ttitle}
+\hypersetup{pdfauthor=\authorname}
+\hypersetup{pdfkeywords=\keywordnames}
+}
+
+\newcommand{\disp}{\boldsymbol{u}}
+\newcommand{\dmg}{\theta}
+\newcommand{\xvec}{\boldsymbol{x}}
+\newcommand{\straint}{\boldsymbol{\epsilon}}
+\newcommand{\stresst}{\boldsymbol{\sigma}}
+
+\DeclareDocumentCommand\dpdv{}{\displaystyle\partialderivative}
+\newcommand*\diff{\mathop{}\!\mathrm{d}}
+\newcommand*\Diff[1]{\mathop{}\!\mathrm{d^#1}}
+
+\newcommand{\ddfrac}[2]{\ensuremath{\frac{\displaystyle #1}{\displaystyle #2}}}
+
+\begin{document}
+\newgeometry{left=3.0cm,right=3.0cm,top=3.0cm,bottom=3.0cm}
+
+\frontmatter
+\pagestyle{plain}
+\pagestyle{empty}
+\begin{center}
+
+% \renewcommand{\baselinestretch}{1.2}
+% \thispagestyle{empty}
+
+\vspace{1.5cm}
+{\Huge\bfseries  \ttitle}
+
+\vspace{1cm}
+{\LARGE\bfseries \subjectname \\ \reptype \\}
+
+\vspace{1.2cm}
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=2.2in, height=2.2in]{imgs/logo.pdf}
+\end{figure}
+
+\vspace{0.5cm}
+
+{\Large
+\begin{center}
+\textbf{Aadit Kumar Sahoo} 23114001 \\
+\textbf{Utkarsh Kumar} 23114101 \\
+\end{center}}
+
+{\large
+\vspace{0.8cm}
+\deptname\\
+\univname\\
+\addressname\\
+\vspace{2.8cm}
+\textit{Supervisor : }\quad \supname\\
+\vspace{0.5cm}
+May, 2026}
+
+\end{center}
+
+\clearpage
+
+\thispagestyle{empty}
+\vspace*{80mm}
+{
+ \begin{center}
+ 	{
+ 		\bfseries
+		\fontfamily{lmr}\selectfont\textcopyright INDIAN INSTITUTE OF TECHNOLOGY ROORKEE, ROORKEE-2026\\
+		ALL RIGHTS RESERVED
+	}
+ \end{center}
+}
+
+\clearpage
+
+\thispagestyle{empty}
+\begin{figure}[htb]
+	\begin{minipage}{0.12\textwidth}
+	\includegraphics[width=1in, height=1in]{imgs/logo.pdf}
+	\end{minipage}%
+	\begin{minipage}[t]{0.88\textwidth}
+	\begin{center}
+		{
+			\large
+	 		\bfseries
+	 		INDIAN INSTITUTE OF TECHNOLOGY\\
+	 		ROORKEE, ROORKEE
+		}
+	\end{center}
+	\end{minipage}
+\end{figure}
+
+\begin{center}
+	\textbf{\underline{{Candidate's Declaration}}}
+\end{center}
+
+
+\vspace{0.5cm}
+We declare that the work carried out in this report entitled \textbf{“\ttitle"} is presented on behalf of the fulfillment of the course CSC-300 submitted to the \textbf{Department of Computer Science and Engineering, Indian Institute of Technology, Roorkee} under the supervision and guidance of \textbf{Prof. Sandeep Kumar Garg, Department of Computer Science and Engineering}
+\vspace{1.5cm}
+
+\begin{flushright}
+	\authorname
+\end{flushright}
+\vspace{.3cm}
+\vspace{2cm}
+
+\begin{minipage}[b]{0.45\textwidth}
+		\begin{flushleft}
+		~\\\vspace{-1.5ex} {\bf Date}: 13 May 2026
+		\end{flushleft}
+\end{minipage}
+\begin{minipage}[b]{0.5\textwidth}
+\begin{flushright}
+\ifdefempty{\cosupname}{}{(\cosupname)\\\vspace{-1cm}Co-Supervisor \\\vspace{-3cm}}
+
+(\supname)\\\vspace{-1cm}Supervisor \\
+\end{flushright}
+\end{minipage}
+
+
+
+\clearpage
+
+\begin{abstract}
+% \addchaptertocentry{\abstractname}
+Detecting software vulnerabilities at an early stage is important for improving the security and reliability of software systems. However, traditional vulnerability detection methods often struggle to accurately identify insecure code and provide meaningful guidance to developers. This thesis presents a vulnerability detection framework for C/C++ source code that combines deep learning techniques with Large Language Models to support automated vulnerability detection, explanation, and fix suggestion generation.
+
+The proposed system integrates machine learning–based code analysis and a Retrieval-Augmented Generation (RAG) mechanism that utilizes vulnerability knowledge sources to improve contextual understanding and detection accuracy. The framework is designed to support efficient real-time analysis and provide developer-friendly security recommendations. Experimental evaluation on real-world C/C++ code samples demonstrates improved vulnerability detection performance and effective localization of vulnerable code segments.
+
+\end{abstract}
+
+\clearpage
+
+\begin{acknowledgements}
+% \addchaptertocentry{\acknowledgementname}
+
+We would like to sincerely thank Prof. Sandeep Garg from the Department of Computer Science and Engineering, IIT Roorkee, for giving us the opportunity to work on this project. His continuous support, guidance, and encouragement have been invaluable to us throughout the process.
+A big thank you to all the team members for their hard work and collaboration. This project wouldn’t have been possible without each one of you.
+
+ \vspace{4cm}
+
+\begin{minipage}[b]{0.5\textwidth}
+	\begin{flushleft}
+		~\\ {\bf Date}: 13 May 2026
+	\end{flushleft}
+\end{minipage}
+\begin{minipage}[b]{0.45\textwidth}
+	\begin{flushright}
+		~\\ \authorname
+	 \end{flushright}
+\end{minipage}
+
+\end{acknowledgements}
+
+\clearpage
+
+\input{allchapters}
+
+\end{document}
