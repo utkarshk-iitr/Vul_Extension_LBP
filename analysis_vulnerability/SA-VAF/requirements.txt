@@ -1,0 +1,10 @@
+torch==2.5.0
+transformers==4.46.2
+datasets==2.21.0
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.5.1
+captum==0.8.0
+dgl==2.1.0
+networkx==3.3
+matplotlib==3.9.2
