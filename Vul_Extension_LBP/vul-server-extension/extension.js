@@ -2,8 +2,8 @@ const vscode = require('vscode');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
-const https = require('https');
+// const http = require('http');
+// const https = require('https');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 
@@ -197,9 +197,9 @@ function applyVulnerabilityHighlights(editor, resultJson) {
     const endChar = Math.max(line.text.length, startChar + 1);
     const range = new vscode.Range(lineIndex, startChar, lineIndex, endChar);
     const finding = findingByLine.get(lineIndex + 1);
-    const fix = finding && Array.isArray(finding.fix_suggestions) && finding.fix_suggestions.length > 0
-      ? String(finding.fix_suggestions[0].summary || '').trim()
-      : '';
+    // const fix = finding && Array.isArray(finding.fix_suggestions) && finding.fix_suggestions.length > 0
+    //   ? String(finding.fix_suggestions[0].summary || '').trim()
+    //   : '';
     const explanation = finding && typeof finding.explanation === 'string'
       ? finding.explanation.trim()
       : '';
@@ -211,21 +211,20 @@ function applyVulnerabilityHighlights(editor, resultJson) {
     if (explanation) {
       hoverParts.push(`Why: ${explanation}`);
     }
-    if (fix) {
-      hoverParts.push(`Fix: ${fix}`);
-    }
+    // Fix suggestions disabled; detection-only UX.
+    // if (fix) {
+    //   hoverParts.push(`Fix: ${fix}`);
+    // }
 
     decorations.push({
       range,
       hoverMessage: hoverParts.join('\n\n'),
     });
 
-    const fixSuffix = fix ? ` Suggested fix: ${fix}` : '';
-
     docDiagnostics.push(
       new vscode.Diagnostic(
         range,
-        `Potential vulnerability detected by model (probability: ${probText}).${fixSuffix}`,
+        `Potential vulnerability detected by model (probability: ${probText}).`,
         vscode.DiagnosticSeverity.Error
       )
     );
@@ -643,508 +642,509 @@ function getStoredAnalysis(editor) {
   return lastAnalysisByUri.get(key) || null;
 }
 
-function splitCsvList(rawValue) {
-  return String(rawValue || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function tryParseJsonLoose(text) {
-  const payload = String(text || '').trim();
-  if (!payload) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(payload);
-  } catch (_) {
-    const first = payload.indexOf('{');
-    const last = payload.lastIndexOf('}');
-    if (first >= 0 && last > first) {
-      try {
-        return JSON.parse(payload.slice(first, last + 1));
-      } catch (_) {
-        return null;
-      }
-    }
-    return null;
-  }
-}
-
-function getFixLlmConfig(config) {
-  const useCloud = config.get('vulServer.useCloudModel', true) === true;
-  const cloudUrl = useCloud ? normalizeOllamaGenerateUrl(config.get('vulServer.ollamaCloudUrl', '') || '') : '';
-  const localUrl = !useCloud ? normalizeOllamaGenerateUrl(config.get('vulServer.ollamaUrl', 'http://127.0.0.1:11434/api/generate') || '') : '';
-  const cloudModel = String(config.get('vulServer.ollamaCloudModel', 'qwen3-coder:cloud') || '').trim();
-  const cloudFallbacks = splitCsvList(config.get('vulServer.ollamaCloudFallbacks', 'qwen3-coder:cloud,llama4:cloud,mistral-large:cloud'));
-  const localModel = String(config.get('vulServer.ollamaModel', 'qwen2.5-coder:3b') || '').trim();
-  const localFallbacks = splitCsvList(config.get('vulServer.ollamaLocalFallbacks', 'qwen2.5-coder:3b,mistral:7b-instruct,llama3.2:3b-instruct'));
-  const timeoutMs = Math.max(1000, Number(config.get('vulServer.llmTimeoutMs', 120000)) || 120000);
-  const temperature = Number(config.get('vulServer.llmTemperature', 0.1)) || 0.1;
-  const apiKey = String(config.get('vulServer.ollamaApiKey', '') || '').trim();
-
-  const cloudModels = [];
-  for (const candidate of [cloudModel, ...cloudFallbacks]) {
-    if (candidate && !cloudModels.includes(candidate)) {
-      cloudModels.push(candidate);
-    }
-  }
-
-  const localModels = [];
-  for (const candidate of [localModel, ...localFallbacks]) {
-    if (candidate && !localModels.includes(candidate)) {
-      localModels.push(candidate);
-    }
-  }
-
-  const endpoints = [];
-  const seenUrls = new Set();
-  const maybeAddEndpoint = (url, type, models) => {
-    if (!url || seenUrls.has(url)) {
-      return;
-    }
-    seenUrls.add(url);
-    endpoints.push({
-      url,
-      type,
-      models: Array.isArray(models) ? models : [],
-    });
-  };
-
-  maybeAddEndpoint(cloudUrl, 'cloud', cloudModels);
-  maybeAddEndpoint(localUrl, 'local', localModels);
-
-  if (endpoints.length > 0) {
-    for (const endpoint of endpoints) {
-      if (endpoint.models.length === 0) {
-        endpoint.models = endpoint.type === 'cloud' ? [...cloudModels, ...localModels] : [...localModels, ...cloudModels];
-      }
-    }
-  }
-
-  return {
-    endpoints,
-    apiKey,
-    timeoutMs,
-    temperature: Math.max(0.0, Math.min(1.0, temperature)),
-  };
-}
-
-function httpPostJson(targetUrl, bodyObj, headers, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    let urlObj;
-    try {
-      urlObj = new URL(targetUrl);
-    } catch (err) {
-      reject(new Error(`Invalid Ollama URL: ${targetUrl}`));
-      return;
-    }
-
-    const isHttps = urlObj.protocol === 'https:';
-    const client = isHttps ? https : http;
-    const payload = JSON.stringify(bodyObj);
-    const req = client.request(
-      {
-        method: 'POST',
-        hostname: urlObj.hostname,
-        port: urlObj.port || (isHttps ? 443 : 80),
-        path: `${urlObj.pathname || '/'}${urlObj.search || ''}`,
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(payload),
-          ...(headers || {}),
-        },
-      },
-      (res) => {
-        let responseBody = '';
-        res.setEncoding('utf8');
-        res.on('data', (chunk) => {
-          responseBody += chunk;
-        });
-        res.on('end', () => {
-          const status = Number(res.statusCode || 0);
-          if (status < 200 || status >= 300) {
-            reject(new Error(`Ollama HTTP ${status}: ${responseBody.slice(0, 300)}`));
-            return;
-          }
-          resolve(responseBody);
-        });
-      }
-    );
-
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Ollama request timeout after ${timeoutMs} ms`));
-    });
-    req.on('error', (err) => reject(err));
-    req.write(payload);
-    req.end();
-  });
-}
-
-function normalizeFixPatches(rawPatches) {
-  if (!Array.isArray(rawPatches)) {
-    return [];
-  }
-
-  const normalized = [];
-  for (const patch of rawPatches) {
-    if (!patch || typeof patch !== 'object') {
-      continue;
-    }
-
-    const startLine = Math.trunc(Number(patch.start_line));
-    const endLine = Math.trunc(Number(patch.end_line));
-    const replacement = String(patch.replacement || '');
-    if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || !replacement.trim()) {
-      continue;
-    }
-
-    normalized.push({
-      title: String(patch.title || 'Suggested fix').trim() || 'Suggested fix',
-      start_line: startLine,
-      end_line: endLine,
-      replacement,
-      summary: String(patch.summary || '').trim(),
-      safety_notes: String(patch.safety_notes || '').trim(),
-      imports: Array.isArray(patch.imports) ? patch.imports : [],
-      confidence: Number(patch.confidence),
-    });
-  }
-
-  return normalized;
-}
-
-function buildFixPrompt(payload) {
-  return [
-    'You are a secure code remediation assistant.',
-    'Return STRICT JSON ONLY with object keys: patches, explanation.',
-    'patches must be an array (max 3) of objects with keys:',
-    'title, start_line, end_line, replacement, summary, safety_notes, imports, confidence.',
-    'Rules:',
-    '- start_line/end_line are 1-based line numbers in the ORIGINAL file.',
-    '- replacement is the exact code that should replace that inclusive line range.',
-    '- Keep edits minimal and compile-safe.',
-    '- Do not include markdown or backticks.',
-    '- If uncertain, return patches as empty array and explain why.',
-    '',
-    `Language: ${payload.languageId}`,
-    `Target line: ${payload.targetLine}`,
-    `Finding title: ${payload.findingTitle}`,
-    `CWE: ${payload.findingCwe}`,
-    `Finding explanation: ${payload.findingExplanation}`,
-    `Selected suggestion summary: ${payload.suggestionSummary}`,
-    `Selected patch hint: ${payload.suggestionPatchHint}`,
-    '',
-    'Context window (with line numbers):',
-    payload.contextWindow,
-    '',
-    'Full file content (may be truncated):',
-    payload.fileContent,
-  ].join('\n');
-}
-
-function buildNumberedContextWindow(document, centerLine, radius) {
-  const start = Math.max(1, centerLine - radius);
-  const end = Math.min(document.lineCount, centerLine + radius);
-  const parts = [];
-  for (let ln = start; ln <= end; ln += 1) {
-    parts.push(`${ln}: ${document.lineAt(ln - 1).text}`);
-  }
-  return parts.join('\n');
-}
-
-async function generateFixPatchesWithOllama(document, finding, suggestion) {
-  const config = vscode.workspace.getConfiguration();
-  const llmCfg = getFixLlmConfig(config);
-  if (!Array.isArray(llmCfg.endpoints) || llmCfg.endpoints.length === 0) {
-    throw new Error('No Ollama endpoint configured for fix generation.');
-  }
-
-  const lineNo = Math.max(1, Math.trunc(Number(finding && finding.line) || 1));
-  const rawContent = document.getText();
-  const maxChars = 16000;
-  const fileContent = rawContent.length > maxChars
-    ? `${rawContent.slice(0, maxChars)}\n/* ... file truncated for fix generation ... */`
-    : rawContent;
-  const payload = {
-    languageId: document.languageId || 'unknown',
-    targetLine: lineNo,
-    findingTitle: finding && finding.title ? String(finding.title) : '',
-    findingCwe: finding && finding.cwe ? String(finding.cwe) : 'unknown',
-    findingExplanation: finding && finding.explanation ? String(finding.explanation) : '',
-    suggestionSummary: suggestion && suggestion.summary ? String(suggestion.summary) : '',
-    suggestionPatchHint: suggestion && suggestion.patch_hint ? String(suggestion.patch_hint) : '',
-    contextWindow: buildNumberedContextWindow(document, lineNo, 6),
-    fileContent,
-  };
-
-  const prompt = buildFixPrompt(payload);
-  const headers = {};
-  if (llmCfg.apiKey) {
-    headers.Authorization = `Bearer ${llmCfg.apiKey}`;
-  }
-
-  let lastError = null;
-  for (const endpoint of llmCfg.endpoints) {
-    const endpointUrl = endpoint.url;
-    const models = Array.isArray(endpoint.models) ? endpoint.models : [];
-    if (models.length === 0) {
-      continue;
-    }
-
-    for (const modelName of models) {
-      const requestBody = {
-        model: modelName,
-        prompt,
-        stream: false,
-        temperature: llmCfg.temperature,
-      };
-
-      try {
-        const responseText = await httpPostJson(endpointUrl, requestBody, headers, llmCfg.timeoutMs);
-        const topLevel = tryParseJsonLoose(responseText);
-        if (!topLevel || typeof topLevel !== 'object') {
-          lastError = 'provider_response_not_json';
-          continue;
-        }
-
-        const modelResponse = tryParseJsonLoose(String(topLevel.response || ''));
-        if (!modelResponse || typeof modelResponse !== 'object') {
-          lastError = 'model_response_not_structured_json';
-          continue;
-        }
-
-        const patches = normalizeFixPatches(modelResponse.patches);
-        if (patches.length === 0) {
-          lastError = String(modelResponse.explanation || 'model_returned_no_patches');
-          continue;
-        }
-
-        return {
-          patches,
-          modelName,
-          explanation: String(modelResponse.explanation || ''),
-          usingCloud: endpoint.type === 'cloud',
-        };
-      } catch (err) {
-        lastError = String(err && err.message ? err.message : err);
-      }
-    }
-  }
-
-  throw new Error(`Fix generation failed: ${lastError || 'no_successful_model_response'}`);
-}
-
-function computePythonImportInsertionLine(document) {
-  let idx = 0;
-  if (document.lineCount > 0 && document.lineAt(0).text.startsWith('#!')) {
-    idx = 1;
-  }
-
-  let lastImport = -1;
-  for (let i = idx; i < document.lineCount; i += 1) {
-    const text = document.lineAt(i).text.trim();
-    if (!text) {
-      if (lastImport >= 0) {
-        break;
-      }
-      continue;
-    }
-    if (/^(from\s+\S+\s+import\s+.+|import\s+.+)$/.test(text)) {
-      lastImport = i;
-      continue;
-    }
-    if (lastImport >= 0) {
-      break;
-    }
-  }
-
-  if (lastImport >= 0) {
-    return lastImport + 1;
-  }
-  return idx;
-}
-
-function applyRequiredImports(edit, document, imports) {
-  if (!document || !Array.isArray(imports) || imports.length === 0) {
-    return;
-  }
-
-  if (document.languageId !== 'python') {
-    return;
-  }
-
-  const existingText = document.getText();
-  const unique = Array.from(new Set(imports.map((x) => String(x).trim()).filter(Boolean)));
-  const missing = unique.filter((stmt) => !existingText.includes(stmt));
-  if (missing.length === 0) {
-    return;
-  }
-
-  const insertLine = computePythonImportInsertionLine(document);
-  const importBlock = `${missing.join('\n')}\n`;
-  edit.insert(document.uri, new vscode.Position(insertLine, 0), importBlock);
-}
-
-async function applySuggestedFix() {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor) {
-    vscode.window.showErrorMessage('No active editor found.');
-    return;
-  }
-
-  const stored = getStoredAnalysis(editor);
-  if (!stored || !Array.isArray(stored.findings) || stored.findings.length === 0) {
-    vscode.window.showWarningMessage('No findings found for this file. Run vulnerability analysis first.');
-    return;
-  }
-
-  const findings = stored.findings
-    .filter((item) => item && Number.isFinite(Number(item.line)))
-    .map((item) => ({ ...item, line: Math.trunc(Number(item.line)) }))
-    .filter((item) => item.line >= 1 && item.line <= editor.document.lineCount)
-    .sort((a, b) => {
-      const confA = Number(a && a.confidence && a.confidence.final);
-      const confB = Number(b && b.confidence && b.confidence.final);
-      if (Number.isFinite(confA) && Number.isFinite(confB) && confA !== confB) {
-        return confB - confA;
-      }
-      return a.line - b.line;
-    });
-
-  if (findings.length === 0) {
-    vscode.window.showWarningMessage('No fixable findings are available for this file.');
-    return;
-  }
-
-  const findingPick = await vscode.window.showQuickPick(
-    findings.map((finding) => {
-      const cwe = finding.cwe ? String(finding.cwe) : 'unknown';
-      const title = finding.title ? String(finding.title) : 'Potential vulnerability';
-      const explanation = finding.explanation ? String(finding.explanation) : '';
-      return {
-        label: `Line ${finding.line}: ${title}`,
-        description: cwe,
-        detail: explanation,
-        finding,
-      };
-    }),
-    {
-      title: 'Choose Vulnerability to Fix',
-      placeHolder: 'Select a finding',
-    }
-  );
-
-  if (!findingPick) {
-    return;
-  }
-
-  const chosenFinding = findingPick.finding;
-  const suggestions = Array.isArray(chosenFinding.fix_suggestions) && chosenFinding.fix_suggestions.length > 0
-    ? chosenFinding.fix_suggestions
-    : [{ summary: 'Apply manual security hardening', patch_hint: '', safety_notes: '' }];
-
-  const suggestionPick = await vscode.window.showQuickPick(
-    suggestions.map((item, idx) => {
-      const summary = item && item.summary ? String(item.summary) : `Suggestion ${idx + 1}`;
-      const hint = item && item.patch_hint ? String(item.patch_hint) : '';
-      const notes = item && item.safety_notes ? String(item.safety_notes) : '';
-      return {
-        label: `${idx + 1}. ${summary}`,
-        description: hint,
-        detail: notes,
-        suggestion: item,
-      };
-    }),
-    {
-      title: 'Choose Fix Strategy',
-      placeHolder: 'Select a suggested fix',
-    }
-  );
-
-  if (!suggestionPick) {
-    return;
-  }
-
-  const lineNo = Math.trunc(Number(chosenFinding.line)) - 1;
-  if (lineNo < 0 || lineNo >= editor.document.lineCount) {
-    vscode.window.showErrorMessage('Selected finding line is out of range in current document.');
-    return;
-  }
-
-  let fixGeneration;
-  try {
-    fixGeneration = await generateFixPatchesWithOllama(editor.document, chosenFinding, suggestionPick.suggestion);
-  } catch (err) {
-    const msg = String(err && err.message ? err.message : err);
-    output.appendLine('--- Vul Extension Fix Generation Error ---');
-    output.appendLine(msg);
-    output.appendLine('--- End Fix Error ---\n');
-    output.show(true);
-    vscode.window.showErrorMessage(`Failed to generate fix: ${msg}`);
-    return;
-  }
-
-  const patchChoice = await vscode.window.showQuickPick(
-    fixGeneration.patches.map((patch, idx) => ({
-      label: `${idx + 1}. ${patch.title}`,
-      description: `lines ${patch.start_line}-${patch.end_line}`,
-      detail: patch.summary || patch.safety_notes || '',
-      patch,
-    })),
-    {
-      title: 'Choose Model-Generated Patch',
-      placeHolder: 'Select a patch candidate',
-    }
-  );
-
-  if (!patchChoice) {
-    return;
-  }
-
-  const selectedPatch = patchChoice.patch;
-  const startLine = Math.max(1, Math.min(editor.document.lineCount, Math.trunc(selectedPatch.start_line)));
-  const endLine = Math.max(startLine, Math.min(editor.document.lineCount, Math.trunc(selectedPatch.end_line)));
-  const preview = `${selectedPatch.replacement}`.split('\n').slice(0, 12).join('\n');
-  const approval = await vscode.window.showWarningMessage(
-    `Apply model-generated fix on lines ${startLine}-${endLine}?\n\nPreview:\n${preview}`,
-    { modal: true },
-    'Apply Fix',
-    'Cancel'
-  );
-  if (approval !== 'Apply Fix') {
-    vscode.window.showInformationMessage('Fix application cancelled by user.');
-    return;
-  }
-
-  const edit = new vscode.WorkspaceEdit();
-  const startPos = new vscode.Position(startLine - 1, 0);
-  const endLineText = editor.document.lineAt(endLine - 1).text;
-  const endPos = new vscode.Position(endLine - 1, endLineText.length);
-  const targetRange = new vscode.Range(startPos, endPos);
-  edit.replace(editor.document.uri, targetRange, String(selectedPatch.replacement || '').trimEnd());
-
-  applyRequiredImports(edit, editor.document, selectedPatch.imports || []);
-
-  const ok = await vscode.workspace.applyEdit(edit);
-  if (!ok) {
-    vscode.window.showErrorMessage('Failed to apply the selected fix.');
-    return;
-  }
-
-  clearVulnerabilityHighlights(editor);
-  lastAnalysisByUri.delete(getAnalysisKey(editor.document));
-  updateStatusBarButton();
-
-  const rerun = await vscode.window.showInformationMessage(
-    `Applied fix using ${fixGeneration.usingCloud ? 'Ollama Cloud' : 'Ollama endpoint'} model ${fixGeneration.modelName}.`,
-    'Re-run Analysis'
-  );
-  if (rerun === 'Re-run Analysis') {
-    await vscode.commands.executeCommand('vulExtension.analyzeActiveEditor');
-  }
-}
+// Fix workflow disabled (detection-only mode). Leave code commented for later re-enable.
+// function splitCsvList(rawValue) {
+//   return String(rawValue || '')
+//     .split(',')
+//     .map((item) => item.trim())
+//     .filter(Boolean);
+// }
+//
+// function tryParseJsonLoose(text) {
+//   const payload = String(text || '').trim();
+//   if (!payload) {
+//     return null;
+//   }
+//
+//   try {
+//     return JSON.parse(payload);
+//   } catch (_) {
+//     const first = payload.indexOf('{');
+//     const last = payload.lastIndexOf('}');
+//     if (first >= 0 && last > first) {
+//       try {
+//         return JSON.parse(payload.slice(first, last + 1));
+//       } catch (_) {
+//         return null;
+//       }
+//     }
+//     return null;
+//   }
+// }
+//
+// function getFixLlmConfig(config) {
+//   const useCloud = config.get('vulServer.useCloudModel', true) === true;
+//   const cloudUrl = useCloud ? normalizeOllamaGenerateUrl(config.get('vulServer.ollamaCloudUrl', '') || '') : '';
+//   const localUrl = !useCloud ? normalizeOllamaGenerateUrl(config.get('vulServer.ollamaUrl', 'http://127.0.0.1:11434/api/generate') || '') : '';
+//   const cloudModel = String(config.get('vulServer.ollamaCloudModel', 'qwen3-coder:cloud') || '').trim();
+//   const cloudFallbacks = splitCsvList(config.get('vulServer.ollamaCloudFallbacks', 'qwen3-coder:cloud,llama4:cloud,mistral-large:cloud'));
+//   const localModel = String(config.get('vulServer.ollamaModel', 'qwen2.5-coder:3b') || '').trim();
+//   const localFallbacks = splitCsvList(config.get('vulServer.ollamaLocalFallbacks', 'qwen2.5-coder:3b,mistral:7b-instruct,llama3.2:3b-instruct'));
+//   const timeoutMs = Math.max(1000, Number(config.get('vulServer.llmTimeoutMs', 120000)) || 120000);
+//   const temperature = Number(config.get('vulServer.llmTemperature', 0.1)) || 0.1;
+//   const apiKey = String(config.get('vulServer.ollamaApiKey', '') || '').trim();
+//
+//   const cloudModels = [];
+//   for (const candidate of [cloudModel, ...cloudFallbacks]) {
+//     if (candidate && !cloudModels.includes(candidate)) {
+//       cloudModels.push(candidate);
+//     }
+//   }
+//
+//   const localModels = [];
+//   for (const candidate of [localModel, ...localFallbacks]) {
+//     if (candidate && !localModels.includes(candidate)) {
+//       localModels.push(candidate);
+//     }
+//   }
+//
+//   const endpoints = [];
+//   const seenUrls = new Set();
+//   const maybeAddEndpoint = (url, type, models) => {
+//     if (!url || seenUrls.has(url)) {
+//       return;
+//     }
+//     seenUrls.add(url);
+//     endpoints.push({
+//       url,
+//       type,
+//       models: Array.isArray(models) ? models : [],
+//     });
+//   };
+//
+//   maybeAddEndpoint(cloudUrl, 'cloud', cloudModels);
+//   maybeAddEndpoint(localUrl, 'local', localModels);
+//
+//   if (endpoints.length > 0) {
+//     for (const endpoint of endpoints) {
+//       if (endpoint.models.length === 0) {
+//         endpoint.models = endpoint.type === 'cloud' ? [...cloudModels, ...localModels] : [...localModels, ...cloudModels];
+//       }
+//     }
+//   }
+//
+//   return {
+//     endpoints,
+//     apiKey,
+//     timeoutMs,
+//     temperature: Math.max(0.0, Math.min(1.0, temperature)),
+//   };
+// }
+//
+// function httpPostJson(targetUrl, bodyObj, headers, timeoutMs) {
+//   return new Promise((resolve, reject) => {
+//     let urlObj;
+//     try {
+//       urlObj = new URL(targetUrl);
+//     } catch (err) {
+//       reject(new Error(`Invalid Ollama URL: ${targetUrl}`));
+//       return;
+//     }
+//
+//     const isHttps = urlObj.protocol === 'https:';
+//     const client = isHttps ? https : http;
+//     const payload = JSON.stringify(bodyObj);
+//     const req = client.request(
+//       {
+//         method: 'POST',
+//         hostname: urlObj.hostname,
+//         port: urlObj.port || (isHttps ? 443 : 80),
+//         path: `${urlObj.pathname || '/'}${urlObj.search || ''}`,
+//         headers: {
+//           'Content-Type': 'application/json',
+//           'Content-Length': Buffer.byteLength(payload),
+//           ...(headers || {}),
+//         },
+//       },
+//       (res) => {
+//         let responseBody = '';
+//         res.setEncoding('utf8');
+//         res.on('data', (chunk) => {
+//           responseBody += chunk;
+//         });
+//         res.on('end', () => {
+//           const status = Number(res.statusCode || 0);
+//           if (status < 200 || status >= 300) {
+//             reject(new Error(`Ollama HTTP ${status}: ${responseBody.slice(0, 300)}`));
+//             return;
+//           }
+//           resolve(responseBody);
+//         });
+//       }
+//     );
+//
+//     req.setTimeout(timeoutMs, () => {
+//       req.destroy(new Error(`Ollama request timeout after ${timeoutMs} ms`));
+//     });
+//     req.on('error', (err) => reject(err));
+//     req.write(payload);
+//     req.end();
+//   });
+// }
+//
+// function normalizeFixPatches(rawPatches) {
+//   if (!Array.isArray(rawPatches)) {
+//     return [];
+//   }
+//
+//   const normalized = [];
+//   for (const patch of rawPatches) {
+//     if (!patch || typeof patch !== 'object') {
+//       continue;
+//     }
+//
+//     const startLine = Math.trunc(Number(patch.start_line));
+//     const endLine = Math.trunc(Number(patch.end_line));
+//     const replacement = String(patch.replacement || '');
+//     if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || !replacement.trim()) {
+//       continue;
+//     }
+//
+//     normalized.push({
+//       title: String(patch.title || 'Suggested fix').trim() || 'Suggested fix',
+//       start_line: startLine,
+//       end_line: endLine,
+//       replacement,
+//       summary: String(patch.summary || '').trim(),
+//       safety_notes: String(patch.safety_notes || '').trim(),
+//       imports: Array.isArray(patch.imports) ? patch.imports : [],
+//       confidence: Number(patch.confidence),
+//     });
+//   }
+//
+//   return normalized;
+// }
+//
+// function buildFixPrompt(payload) {
+//   return [
+//     'You are a secure code remediation assistant.',
+//     'Return STRICT JSON ONLY with object keys: patches, explanation.',
+//     'patches must be an array (max 3) of objects with keys:',
+//     'title, start_line, end_line, replacement, summary, safety_notes, imports, confidence.',
+//     'Rules:',
+//     '- start_line/end_line are 1-based line numbers in the ORIGINAL file.',
+//     '- replacement is the exact code that should replace that inclusive line range.',
+//     '- Keep edits minimal and compile-safe.',
+//     '- Do not include markdown or backticks.',
+//     '- If uncertain, return patches as empty array and explain why.',
+//     '',
+//     `Language: ${payload.languageId}`,
+//     `Target line: ${payload.targetLine}`,
+//     `Finding title: ${payload.findingTitle}`,
+//     `CWE: ${payload.findingCwe}`,
+//     `Finding explanation: ${payload.findingExplanation}`,
+//     `Selected suggestion summary: ${payload.suggestionSummary}`,
+//     `Selected patch hint: ${payload.suggestionPatchHint}`,
+//     '',
+//     'Context window (with line numbers):',
+//     payload.contextWindow,
+//     '',
+//     'Full file content (may be truncated):',
+//     payload.fileContent,
+//   ].join('\n');
+// }
+//
+// function buildNumberedContextWindow(document, centerLine, radius) {
+//   const start = Math.max(1, centerLine - radius);
+//   const end = Math.min(document.lineCount, centerLine + radius);
+//   const parts = [];
+//   for (let ln = start; ln <= end; ln += 1) {
+//     parts.push(`${ln}: ${document.lineAt(ln - 1).text}`);
+//   }
+//   return parts.join('\n');
+// }
+//
+// async function generateFixPatchesWithOllama(document, finding, suggestion) {
+//   const config = vscode.workspace.getConfiguration();
+//   const llmCfg = getFixLlmConfig(config);
+//   if (!Array.isArray(llmCfg.endpoints) || llmCfg.endpoints.length === 0) {
+//     throw new Error('No Ollama endpoint configured for fix generation.');
+//   }
+//
+//   const lineNo = Math.max(1, Math.trunc(Number(finding && finding.line) || 1));
+//   const rawContent = document.getText();
+//   const maxChars = 16000;
+//   const fileContent = rawContent.length > maxChars
+//     ? `${rawContent.slice(0, maxChars)}\n/* ... file truncated for fix generation ... */`
+//     : rawContent;
+//   const payload = {
+//     languageId: document.languageId || 'unknown',
+//     targetLine: lineNo,
+//     findingTitle: finding && finding.title ? String(finding.title) : '',
+//     findingCwe: finding && finding.cwe ? String(finding.cwe) : 'unknown',
+//     findingExplanation: finding && finding.explanation ? String(finding.explanation) : '',
+//     suggestionSummary: suggestion && suggestion.summary ? String(suggestion.summary) : '',
+//     suggestionPatchHint: suggestion && suggestion.patch_hint ? String(suggestion.patch_hint) : '',
+//     contextWindow: buildNumberedContextWindow(document, lineNo, 6),
+//     fileContent,
+//   };
+//
+//   const prompt = buildFixPrompt(payload);
+//   const headers = {};
+//   if (llmCfg.apiKey) {
+//     headers.Authorization = `Bearer ${llmCfg.apiKey}`;
+//   }
+//
+//   let lastError = null;
+//   for (const endpoint of llmCfg.endpoints) {
+//     const endpointUrl = endpoint.url;
+//     const models = Array.isArray(endpoint.models) ? endpoint.models : [];
+//     if (models.length === 0) {
+//       continue;
+//     }
+//
+//     for (const modelName of models) {
+//       const requestBody = {
+//         model: modelName,
+//         prompt,
+//         stream: false,
+//         temperature: llmCfg.temperature,
+//       };
+//
+//       try {
+//         const responseText = await httpPostJson(endpointUrl, requestBody, headers, llmCfg.timeoutMs);
+//         const topLevel = tryParseJsonLoose(responseText);
+//         if (!topLevel || typeof topLevel !== 'object') {
+//           lastError = 'provider_response_not_json';
+//           continue;
+//         }
+//
+//         const modelResponse = tryParseJsonLoose(String(topLevel.response || ''));
+//         if (!modelResponse || typeof modelResponse !== 'object') {
+//           lastError = 'model_response_not_structured_json';
+//           continue;
+//         }
+//
+//         const patches = normalizeFixPatches(modelResponse.patches);
+//         if (patches.length === 0) {
+//           lastError = String(modelResponse.explanation || 'model_returned_no_patches');
+//           continue;
+//         }
+//
+//         return {
+//           patches,
+//           modelName,
+//           explanation: String(modelResponse.explanation || ''),
+//           usingCloud: endpoint.type === 'cloud',
+//         };
+//       } catch (err) {
+//         lastError = String(err && err.message ? err.message : err);
+//       }
+//     }
+//   }
+//
+//   throw new Error(`Fix generation failed: ${lastError || 'no_successful_model_response'}`);
+// }
+//
+// function computePythonImportInsertionLine(document) {
+//   let idx = 0;
+//   if (document.lineCount > 0 && document.lineAt(0).text.startsWith('#!')) {
+//     idx = 1;
+//   }
+//
+//   let lastImport = -1;
+//   for (let i = idx; i < document.lineCount; i += 1) {
+//     const text = document.lineAt(i).text.trim();
+//     if (!text) {
+//       if (lastImport >= 0) {
+//         break;
+//       }
+//       continue;
+//     }
+//     if (/^(from\s+\S+\s+import\s+.+|import\s+.+)$/.test(text)) {
+//       lastImport = i;
+//       continue;
+//     }
+//     if (lastImport >= 0) {
+//       break;
+//     }
+//   }
+//
+//   if (lastImport >= 0) {
+//     return lastImport + 1;
+//   }
+//   return idx;
+// }
+//
+// function applyRequiredImports(edit, document, imports) {
+//   if (!document || !Array.isArray(imports) || imports.length === 0) {
+//     return;
+//   }
+//
+//   if (document.languageId !== 'python') {
+//     return;
+//   }
+//
+//   const existingText = document.getText();
+//   const unique = Array.from(new Set(imports.map((x) => String(x).trim()).filter(Boolean)));
+//   const missing = unique.filter((stmt) => !existingText.includes(stmt));
+//   if (missing.length === 0) {
+//     return;
+//   }
+//
+//   const insertLine = computePythonImportInsertionLine(document);
+//   const importBlock = `${missing.join('\n')}\n`;
+//   edit.insert(document.uri, new vscode.Position(insertLine, 0), importBlock);
+// }
+//
+// async function applySuggestedFix() {
+//   const editor = vscode.window.activeTextEditor;
+//   if (!editor) {
+//     vscode.window.showErrorMessage('No active editor found.');
+//     return;
+//   }
+//
+//   const stored = getStoredAnalysis(editor);
+//   if (!stored || !Array.isArray(stored.findings) || stored.findings.length === 0) {
+//     vscode.window.showWarningMessage('No findings found for this file. Run vulnerability analysis first.');
+//     return;
+//   }
+//
+//   const findings = stored.findings
+//     .filter((item) => item && Number.isFinite(Number(item.line)))
+//     .map((item) => ({ ...item, line: Math.trunc(Number(item.line)) }))
+//     .filter((item) => item.line >= 1 && item.line <= editor.document.lineCount)
+//     .sort((a, b) => {
+//       const confA = Number(a && a.confidence && a.confidence.final);
+//       const confB = Number(b && b.confidence && b.confidence.final);
+//       if (Number.isFinite(confA) && Number.isFinite(confB) && confA !== confB) {
+//         return confB - confA;
+//       }
+//       return a.line - b.line;
+//     });
+//
+//   if (findings.length === 0) {
+//     vscode.window.showWarningMessage('No fixable findings are available for this file.');
+//     return;
+//   }
+//
+//   const findingPick = await vscode.window.showQuickPick(
+//     findings.map((finding) => {
+//       const cwe = finding.cwe ? String(finding.cwe) : 'unknown';
+//       const title = finding.title ? String(finding.title) : 'Potential vulnerability';
+//       const explanation = finding.explanation ? String(finding.explanation) : '';
+//       return {
+//         label: `Line ${finding.line}: ${title}`,
+//         description: cwe,
+//         detail: explanation,
+//         finding,
+//       };
+//     }),
+//     {
+//       title: 'Choose Vulnerability to Fix',
+//       placeHolder: 'Select a finding',
+//     }
+//   );
+//
+//   if (!findingPick) {
+//     return;
+//   }
+//
+//   const chosenFinding = findingPick.finding;
+//   const suggestions = Array.isArray(chosenFinding.fix_suggestions) && chosenFinding.fix_suggestions.length > 0
+//     ? chosenFinding.fix_suggestions
+//     : [{ summary: 'Apply manual security hardening', patch_hint: '', safety_notes: '' }];
+//
+//   const suggestionPick = await vscode.window.showQuickPick(
+//     suggestions.map((item, idx) => {
+//       const summary = item && item.summary ? String(item.summary) : `Suggestion ${idx + 1}`;
+//       const hint = item && item.patch_hint ? String(item.patch_hint) : '';
+//       const notes = item && item.safety_notes ? String(item.safety_notes) : '';
+//       return {
+//         label: `${idx + 1}. ${summary}`,
+//         description: hint,
+//         detail: notes,
+//         suggestion: item,
+//       };
+//     }),
+//     {
+//       title: 'Choose Fix Strategy',
+//       placeHolder: 'Select a suggested fix',
+//     }
+//   );
+//
+//   if (!suggestionPick) {
+//     return;
+//   }
+//
+//   const lineNo = Math.trunc(Number(chosenFinding.line)) - 1;
+//   if (lineNo < 0 || lineNo >= editor.document.lineCount) {
+//     vscode.window.showErrorMessage('Selected finding line is out of range in current document.');
+//     return;
+//   }
+//
+//   let fixGeneration;
+//   try {
+//     fixGeneration = await generateFixPatchesWithOllama(editor.document, chosenFinding, suggestionPick.suggestion);
+//   } catch (err) {
+//     const msg = String(err && err.message ? err.message : err);
+//     output.appendLine('--- Vul Extension Fix Generation Error ---');
+//     output.appendLine(msg);
+//     output.appendLine('--- End Fix Error ---\n');
+//     output.show(true);
+//     vscode.window.showErrorMessage(`Failed to generate fix: ${msg}`);
+//     return;
+//   }
+//
+//   const patchChoice = await vscode.window.showQuickPick(
+//     fixGeneration.patches.map((patch, idx) => ({
+//       label: `${idx + 1}. ${patch.title}`,
+//       description: `lines ${patch.start_line}-${patch.end_line}`,
+//       detail: patch.summary || patch.safety_notes || '',
+//       patch,
+//     })),
+//     {
+//       title: 'Choose Model-Generated Patch',
+//       placeHolder: 'Select a patch candidate',
+//     }
+//   );
+//
+//   if (!patchChoice) {
+//     return;
+//   }
+//
+//   const selectedPatch = patchChoice.patch;
+//   const startLine = Math.max(1, Math.min(editor.document.lineCount, Math.trunc(selectedPatch.start_line)));
+//   const endLine = Math.max(startLine, Math.min(editor.document.lineCount, Math.trunc(selectedPatch.end_line)));
+//   const preview = `${selectedPatch.replacement}`.split('\n').slice(0, 12).join('\n');
+//   const approval = await vscode.window.showWarningMessage(
+//     `Apply model-generated fix on lines ${startLine}-${endLine}?\n\nPreview:\n${preview}`,
+//     { modal: true },
+//     'Apply Fix',
+//     'Cancel'
+//   );
+//   if (approval !== 'Apply Fix') {
+//     vscode.window.showInformationMessage('Fix application cancelled by user.');
+//     return;
+//   }
+//
+//   const edit = new vscode.WorkspaceEdit();
+//   const startPos = new vscode.Position(startLine - 1, 0);
+//   const endLineText = editor.document.lineAt(endLine - 1).text;
+//   const endPos = new vscode.Position(endLine - 1, endLineText.length);
+//   const targetRange = new vscode.Range(startPos, endPos);
+//   edit.replace(editor.document.uri, targetRange, String(selectedPatch.replacement || '').trimEnd());
+//
+//   applyRequiredImports(edit, editor.document, selectedPatch.imports || []);
+//
+//   const ok = await vscode.workspace.applyEdit(edit);
+//   if (!ok) {
+//     vscode.window.showErrorMessage('Failed to apply the selected fix.');
+//     return;
+//   }
+//
+//   clearVulnerabilityHighlights(editor);
+//   lastAnalysisByUri.delete(getAnalysisKey(editor.document));
+//   updateStatusBarButton();
+//
+//   const rerun = await vscode.window.showInformationMessage(
+//     `Applied fix using ${fixGeneration.usingCloud ? 'Ollama Cloud' : 'Ollama endpoint'} model ${fixGeneration.modelName}.`,
+//     'Re-run Analysis'
+//   );
+//   if (rerun === 'Re-run Analysis') {
+//     await vscode.commands.executeCommand('vulExtension.analyzeActiveEditor');
+//   }
+// }
 
 function buildSshArgs(host, port, user, remoteCmd) {
   return [
@@ -1280,14 +1280,14 @@ async function analyzeActiveEditor() {
             const cwe = finding && finding.cwe ? String(finding.cwe) : 'unknown';
             const why = finding && finding.explanation ? String(finding.explanation) : 'n/a';
             output.appendLine(`  - ${lineText} [${cwe}] ${why}`);
-            if (Array.isArray(finding && finding.fix_suggestions) && finding.fix_suggestions.length > 0) {
-              const primaryFix = finding.fix_suggestions[0] && finding.fix_suggestions[0].summary
-                ? String(finding.fix_suggestions[0].summary)
-                : '';
-              if (primaryFix) {
-                output.appendLine(`    fix: ${primaryFix}`);
-              }
-            }
+            // if (Array.isArray(finding && finding.fix_suggestions) && finding.fix_suggestions.length > 0) {
+            //   const primaryFix = finding.fix_suggestions[0] && finding.fix_suggestions[0].summary
+            //     ? String(finding.fix_suggestions[0].summary)
+            //     : '';
+            //   if (primaryFix) {
+            //     output.appendLine(`    fix: ${primaryFix}`);
+            //   }
+            // }
           }
         }
         output.appendLine('--- End of Run ---\n');
@@ -1307,17 +1307,19 @@ async function analyzeActiveEditor() {
         updateStatusBarButton(Number(res.json.vulnerable_probability));
 
         const completionMessage = `Vul analysis complete: prob=${p}, lines=${lineCount}, findings=${findings.length}, time=${elapsedMs}ms`;
-        if (findings.length > 0) {
-          const action = await vscode.window.showInformationMessage(
-            completionMessage,
-            'Choose Fix'
-          );
-          if (action === 'Choose Fix') {
-            await vscode.commands.executeCommand('vulExtension.applySuggestedFix');
-          }
-        } else {
-          vscode.window.showInformationMessage(completionMessage);
-        }
+        // Fix flow disabled; only show detection summary.
+        // if (findings.length > 0) {
+        //   const action = await vscode.window.showInformationMessage(
+        //     completionMessage,
+        //     'Choose Fix'
+        //   );
+        //   if (action === 'Choose Fix') {
+        //     await vscode.commands.executeCommand('vulExtension.applySuggestedFix');
+        //   }
+        // } else {
+        //   vscode.window.showInformationMessage(completionMessage);
+        // }
+        vscode.window.showInformationMessage(completionMessage);
       } catch (err) {
         clearVulnerabilityHighlights(editor);
         lastAnalysisByUri.delete(getAnalysisKey(editor.document));
@@ -1451,7 +1453,7 @@ function activate(context) {
     startServer(context);
     await analyzeActiveEditor();
   });
-  const applyFix = vscode.commands.registerCommand('vulExtension.applySuggestedFix', () => applySuggestedFix());
+  // const applyFix = vscode.commands.registerCommand('vulExtension.applySuggestedFix', () => applySuggestedFix());
   const start = vscode.commands.registerCommand('vulExtension.startServer', () => startServer(context));
   const stop = vscode.commands.registerCommand('vulExtension.stopServer', () => stopServer());
   const startInference = vscode.commands.registerCommand('vulExtension.startInferenceServer', async () => {
@@ -1474,7 +1476,7 @@ function activate(context) {
   context.subscriptions.push(
     analyze,
     analyzeNormal,
-    applyFix,
+    // applyFix,
     start,
     stop,
     startInference,

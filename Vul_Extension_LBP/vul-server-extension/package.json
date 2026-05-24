@@ -10,7 +10,6 @@
     "onStartupFinished",
     "onCommand:vulExtension.analyzeActiveEditor",
     "onCommand:vulExtension.runNormalAnalysis",
-    "onCommand:vulExtension.applySuggestedFix",
     "onCommand:vulExtension.startServer",
     "onCommand:vulExtension.stopServer",
     "onCommand:vulExtension.startInferenceServer",
@@ -27,11 +26,6 @@
       {
         "command": "vulExtension.runNormalAnalysis",
         "title": "Vul Extension: Run Normal Analysis"
-      },
-      {
-        "command": "vulExtension.applySuggestedFix",
-        "title": "Vul Extension: Apply Suggested Fix",
-        "icon": "$(tools)"
       },
       {
         "command": "vulExtension.startServer",
@@ -55,11 +49,6 @@
         {
           "command": "vulExtension.analyzeActiveEditor",
           "group": "navigation@8",
-          "when": "editorTextFocus"
-        },
-        {
-          "command": "vulExtension.applySuggestedFix",
-          "group": "navigation@9",
           "when": "editorTextFocus"
         }
       ]
@@ -197,7 +186,7 @@
         "vulServer.llmEnabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable LLM generation for grounded explanation and fix guidance"
+          "description": "Enable LLM generation for grounded explanations"
         },
         "vulServer.llmProvider": {
           "type": "string",
@@ -253,7 +242,7 @@
         "vulServer.llmTemperature": {
           "type": "number",
           "default": 0.1,
-          "description": "LLM generation temperature for explanation and fix suggestions"
+          "description": "LLM generation temperature for explanations"
         },
         "vulServer.showRawJson": {
           "type": "boolean",

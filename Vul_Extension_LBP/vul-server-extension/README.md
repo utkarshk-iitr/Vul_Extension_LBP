@@ -12,7 +12,7 @@ Local mode can use a persistent inference server to avoid cold starts and keep c
 
 - Vul Extension: Analyze Active Editor
 - Vul Extension: Run Normal Analysis
-- Vul Extension: Apply Suggested Fix
+<!-- - Vul Extension: Apply Suggested Fix -->
 - Vul Server: Start
 - Vul Server: Stop
 - Vul Inference Server: Start
@@ -27,20 +27,22 @@ Analyze Active Editor command:
 4. Highlights vulnerable lines with red underline in the active editor.
 5. Updates shield status bar button with latest vulnerability probability.
 6. Shows summary notification and run details in output channel.
-7. If findings exist, offers a Choose Fix action.
+<!-- 7. If findings exist, offers a Choose Fix action. -->
 
+<!--
 Apply Suggested Fix command:
 1. Opens a picker for findings from the latest analysis of the current file.
 2. Lets user choose one of the generated fix suggestions.
 3. Calls the configured Ollama endpoint (cloud-first model selection) to generate structured patch candidates for the selected finding.
 4. Shows patch candidates for selection, then asks explicit approval before applying any edit.
 5. Offers a one-click re-run of analysis after the edit.
+-->
 
 ## UI Elements
 
 Editor toolbar buttons:
 - Shield icon: run vulnerability analysis on active editor.
-- Tools icon: open suggested fix picker for latest findings.
+<!-- - Tools icon: open suggested fix picker for latest findings. -->
 
 Status bar button:
 - Shield icon displays last vulnerability probability.
@@ -70,7 +72,7 @@ Status bar button:
 - vulServer.staticRulesEnabled: enable additional static-rule findings
 - vulServer.staticMaxFindings: max static findings merged per file
 - vulServer.ragBudgetMs: total RAG stage budget
-- vulServer.llmEnabled: enable LLM explanation/fix generation
+- vulServer.llmEnabled: enable LLM explanation generation
 - vulServer.llmProvider: LLM backend provider
 - vulServer.ollamaUrl: local ollama endpoint
 - vulServer.ollamaCloudUrl: cloud ollama endpoint
@@ -124,7 +126,7 @@ Steps:
 2. Press F5 to launch Extension Development Host.
 3. Open a source file in the new window.
 4. Run command: Vul Extension: Analyze Active Editor.
-5. If findings are reported, click Choose Fix or run Vul Extension: Apply Suggested Fix.
+<!-- 5. If findings are reported, click Choose Fix or run Vul Extension: Apply Suggested Fix. -->
 
 ## SSH Backend Testing
 
