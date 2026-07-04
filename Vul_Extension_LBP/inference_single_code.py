@@ -283,149 +283,148 @@ def _hash_code(raw_code):
     except Exception:
         pass
 
+# def _download_cwe_catalog_xml(url, timeout_seconds=15):
+#     req = urllib_request.Request(url, headers={"User-Agent": "vul-extension-cwe-rag/1.0"})
+#     with urllib_request.urlopen(req, timeout=max(3, int(timeout_seconds))) as resp:
+#         blob = resp.read()
 
-def _download_cwe_catalog_xml(url, timeout_seconds=15):
-    req = urllib_request.Request(url, headers={"User-Agent": "vul-extension-cwe-rag/1.0"})
-    with urllib_request.urlopen(req, timeout=max(3, int(timeout_seconds))) as resp:
-        blob = resp.read()
+#     if blob[:2] == b"PK":
+#         with zipfile.ZipFile(io.BytesIO(blob), "r") as archive:
+#             xml_names = [name for name in archive.namelist() if name.lower().endswith(".xml")]
+#             if not xml_names:
+#                 raise ValueError("cwe_zip_missing_xml")
+#             with archive.open(xml_names[0], "r") as xml_file:
+#                 return xml_file.read()
 
-    if blob[:2] == b"PK":
-        with zipfile.ZipFile(io.BytesIO(blob), "r") as archive:
-            xml_names = [name for name in archive.namelist() if name.lower().endswith(".xml")]
-            if not xml_names:
-                raise ValueError("cwe_zip_missing_xml")
-            with archive.open(xml_names[0], "r") as xml_file:
-                return xml_file.read()
-
-    return blob
-
-
-def _parse_cwe_catalog(xml_bytes):
-    root = ET.fromstring(xml_bytes)
-    entries = []
-    for node in root.iter():
-        tag = str(node.tag).lower()
-        if not tag.endswith("weakness"):
-            continue
-
-        weakness_id = node.attrib.get("ID")
-        weakness_name = _clean_text(node.attrib.get("Name"))
-        if not weakness_id or not weakness_name:
-            continue
-
-        description = ""
-        for child in node:
-            child_tag = str(child.tag).lower()
-            if child_tag.endswith("description"):
-                description = _clean_text("".join(child.itertext()))
-                if description:
-                    break
-
-        if not description:
-            description = f"{weakness_name} weakness pattern in software behavior."
-
-        cwe = f"CWE-{weakness_id}"
-        searchable = f"{weakness_name} {description}"
-        entries.append(
-            {
-                "id": cwe,
-                "title": weakness_name,
-                "cwe": cwe,
-                "why": description[:550],
-                "keywords": _keywords_from_text(searchable),
-                "fix_suggestions": [],
-            }
-        )
-
-    return entries
+#     return blob
 
 
-def _get_cwe_catalog(runtime_cfg):
-    global CWE_CATALOG_STATE
+# def _parse_cwe_catalog(xml_bytes):
+#     root = ET.fromstring(xml_bytes)
+#     entries = []
+#     for node in root.iter():
+#         tag = str(node.tag).lower()
+#         if not tag.endswith("weakness"):
+#             continue
 
-    if isinstance(CWE_CATALOG_STATE.get("entries"), list) and CWE_CATALOG_STATE.get("entries"):
-        return CWE_CATALOG_STATE["entries"]
+#         weakness_id = node.attrib.get("ID")
+#         weakness_name = _clean_text(node.attrib.get("Name"))
+#         if not weakness_id or not weakness_name:
+#             continue
 
-    cache_path = runtime_cfg.get("cwe_cache_path", CWE_CATALOG_CACHE_PATH)
-    refresh_hours = max(1, int(runtime_cfg.get("cwe_refresh_hours", 168)))
-    refresh_seconds = refresh_hours * 3600
-    now_ts = int(time.time())
+#         description = ""
+#         for child in node:
+#             child_tag = str(child.tag).lower()
+#             if child_tag.endswith("description"):
+#                 description = _clean_text("".join(child.itertext()))
+#                 if description:
+#                     break
 
-    cached_payload = _load_json_file(cache_path)
-    cached_entries = []
-    cached_fetched_at = 0
-    if isinstance(cached_payload, dict):
-        possible_entries = cached_payload.get("entries", [])
-        if isinstance(possible_entries, list):
-            cached_entries = possible_entries
-        try:
-            cached_fetched_at = int(cached_payload.get("fetched_at", 0))
-        except Exception:
-            cached_fetched_at = 0
+#         if not description:
+#             description = f"{weakness_name} weakness pattern in software behavior."
 
-    has_fresh_cache = bool(cached_entries) and (now_ts - cached_fetched_at) <= refresh_seconds
-    if has_fresh_cache:
-        CWE_CATALOG_STATE = {
-            "entries": cached_entries,
-            "source": "cache_fresh",
-            "count": len(cached_entries),
-            "fetched_at": cached_fetched_at,
-            "last_error": "",
-        }
-        return cached_entries
+#         cwe = f"CWE-{weakness_id}"
+#         searchable = f"{weakness_name} {description}"
+#         entries.append(
+#             {
+#                 "id": cwe,
+#                 "title": weakness_name,
+#                 "cwe": cwe,
+#                 "why": description[:550],
+#                 "keywords": _keywords_from_text(searchable),
+#                 "fix_suggestions": [],
+#             }
+#         )
 
-    catalog_url = str(runtime_cfg.get("cwe_catalog_url", DEFAULT_CWE_CATALOG_URL)).strip()
-    if catalog_url:
-        try:
-            xml_bytes = _download_cwe_catalog_xml(catalog_url, timeout_seconds=20)
-            parsed_entries = _parse_cwe_catalog(xml_bytes)
-            if parsed_entries:
-                _write_json_file(
-                    cache_path,
-                    {
-                        "source_url": catalog_url,
-                        "fetched_at": now_ts,
-                        "count": len(parsed_entries),
-                        "entries": parsed_entries,
-                    },
-                )
-                CWE_CATALOG_STATE = {
-                    "entries": parsed_entries,
-                    "source": "downloaded",
-                    "count": len(parsed_entries),
-                    "fetched_at": now_ts,
-                    "last_error": "",
-                }
-                return parsed_entries
-        except Exception as exc:
-            last_error = str(exc)
-            if cached_entries:
-                CWE_CATALOG_STATE = {
-                    "entries": cached_entries,
-                    "source": "cache_stale",
-                    "count": len(cached_entries),
-                    "fetched_at": cached_fetched_at,
-                    "last_error": last_error,
-                }
-                return cached_entries
+#     return entries
 
-            CWE_CATALOG_STATE = {
-                "entries": [],
-                "source": "empty",
-                "count": 0,
-                "fetched_at": 0,
-                "last_error": last_error,
-            }
-            return []
 
-    CWE_CATALOG_STATE = {
-        "entries": cached_entries,
-        "source": "cache_stale" if cached_entries else "empty",
-        "count": len(cached_entries),
-        "fetched_at": cached_fetched_at,
-        "last_error": "",
-    }
-    return cached_entries
+# def _get_cwe_catalog(runtime_cfg):
+#     global CWE_CATALOG_STATE
+
+#     if isinstance(CWE_CATALOG_STATE.get("entries"), list) and CWE_CATALOG_STATE.get("entries"):
+#         return CWE_CATALOG_STATE["entries"]
+
+#     cache_path = runtime_cfg.get("cwe_cache_path", CWE_CATALOG_CACHE_PATH)
+#     refresh_hours = max(1, int(runtime_cfg.get("cwe_refresh_hours", 168)))
+#     refresh_seconds = refresh_hours * 3600
+#     now_ts = int(time.time())
+
+#     cached_payload = _load_json_file(cache_path)
+#     cached_entries = []
+#     cached_fetched_at = 0
+#     if isinstance(cached_payload, dict):
+#         possible_entries = cached_payload.get("entries", [])
+#         if isinstance(possible_entries, list):
+#             cached_entries = possible_entries
+#         try:
+#             cached_fetched_at = int(cached_payload.get("fetched_at", 0))
+#         except Exception:
+#             cached_fetched_at = 0
+
+#     has_fresh_cache = bool(cached_entries) and (now_ts - cached_fetched_at) <= refresh_seconds
+#     if has_fresh_cache:
+#         CWE_CATALOG_STATE = {
+#             "entries": cached_entries,
+#             "source": "cache_fresh",
+#             "count": len(cached_entries),
+#             "fetched_at": cached_fetched_at,
+#             "last_error": "",
+#         }
+#         return cached_entries
+
+#     catalog_url = str(runtime_cfg.get("cwe_catalog_url", DEFAULT_CWE_CATALOG_URL)).strip()
+#     if catalog_url:
+#         try:
+#             xml_bytes = _download_cwe_catalog_xml(catalog_url, timeout_seconds=20)
+#             parsed_entries = _parse_cwe_catalog(xml_bytes)
+#             if parsed_entries:
+#                 _write_json_file(
+#                     cache_path,
+#                     {
+#                         "source_url": catalog_url,
+#                         "fetched_at": now_ts,
+#                         "count": len(parsed_entries),
+#                         "entries": parsed_entries,
+#                     },
+#                 )
+#                 CWE_CATALOG_STATE = {
+#                     "entries": parsed_entries,
+#                     "source": "downloaded",
+#                     "count": len(parsed_entries),
+#                     "fetched_at": now_ts,
+#                     "last_error": "",
+#                 }
+#                 return parsed_entries
+#         except Exception as exc:
+#             last_error = str(exc)
+#             if cached_entries:
+#                 CWE_CATALOG_STATE = {
+#                     "entries": cached_entries,
+#                     "source": "cache_stale",
+#                     "count": len(cached_entries),
+#                     "fetched_at": cached_fetched_at,
+#                     "last_error": last_error,
+#                 }
+#                 return cached_entries
+
+#             CWE_CATALOG_STATE = {
+#                 "entries": [],
+#                 "source": "empty",
+#                 "count": 0,
+#                 "fetched_at": 0,
+#                 "last_error": last_error,
+#             }
+#             return []
+
+#     CWE_CATALOG_STATE = {
+#         "entries": cached_entries,
+#         "source": "cache_stale" if cached_entries else "empty",
+#         "count": len(cached_entries),
+#         "fetched_at": cached_fetched_at,
+#         "last_error": "",
+#     }
+#     return cached_entries
 
 
 def _extract_context_window(raw_code, line_no, window):
@@ -454,224 +453,224 @@ def _extract_context_window(raw_code, line_no, window):
     }
 
 
-def _retrieve_evidence(line_text, context_text, top_k, cwe_catalog):
-    line_lower = str(line_text).lower()
-    ctx_lower = str(context_text).lower()
-    ctx_tokens = _token_set(f"{line_text}\n{context_text}")
-    candidates = []
-    matched_patterns = [p for p in GENERIC_RISK_PATTERNS if p and (p in line_lower or p in ctx_lower)]
+# def _retrieve_evidence(line_text, context_text, top_k, cwe_catalog):
+#     line_lower = str(line_text).lower()
+#     ctx_lower = str(context_text).lower()
+#     ctx_tokens = _token_set(f"{line_text}\n{context_text}")
+#     candidates = []
+#     matched_patterns = [p for p in GENERIC_RISK_PATTERNS if p and (p in line_lower or p in ctx_lower)]
 
-    keyword_risk_hits = len(ctx_tokens.intersection(GENERIC_RISK_KEYWORDS))
-    risk_bias = min(2.0, 0.2 * len(matched_patterns) + 0.1 * keyword_risk_hits)
+#     keyword_risk_hits = len(ctx_tokens.intersection(GENERIC_RISK_KEYWORDS))
+#     risk_bias = min(2.0, 0.2 * len(matched_patterns) + 0.1 * keyword_risk_hits)
 
-    for item in cwe_catalog:
-        keywords = set(str(k).lower() for k in item.get("keywords", []))
-        if not keywords:
-            keywords = _token_set(f"{item.get('title', '')} {item.get('why', '')}")
-        if not keywords:
-            continue
+#     for item in cwe_catalog:
+#         keywords = set(str(k).lower() for k in item.get("keywords", []))
+#         if not keywords:
+#             keywords = _token_set(f"{item.get('title', '')} {item.get('why', '')}")
+#         if not keywords:
+#             continue
 
-        keyword_overlap = len(ctx_tokens.intersection(keywords))
-        keyword_norm = keyword_overlap / max(len(keywords), 1)
-        title_tokens = _token_set(item.get("title", ""))
-        title_overlap = len(ctx_tokens.intersection(title_tokens)) / max(1, len(title_tokens))
-        score = (3.5 * keyword_norm) + (2.0 * title_overlap) + risk_bias
+#         keyword_overlap = len(ctx_tokens.intersection(keywords))
+#         keyword_norm = keyword_overlap / max(len(keywords), 1)
+#         title_tokens = _token_set(item.get("title", ""))
+#         title_overlap = len(ctx_tokens.intersection(title_tokens)) / max(1, len(title_tokens))
+#         score = (3.5 * keyword_norm) + (2.0 * title_overlap) + risk_bias
 
-        if score <= 0.15:
-            continue
+#         if score <= 0.15:
+#             continue
 
-        candidates.append(
-            {
-                "id": item.get("id", "cwe-unknown"),
-                "title": item.get("title", "Potential vulnerability pattern"),
-                "cwe": item.get("cwe", "unknown"),
-                "why": item.get("why", "Potentially unsafe coding pattern matched."),
-                "score": round(float(score), 4),
-                "matched_patterns": matched_patterns[:5],
-                "fix_suggestions": item.get("fix_suggestions", []),
-            }
-        )
+#         candidates.append(
+#             {
+#                 "id": item.get("id", "cwe-unknown"),
+#                 "title": item.get("title", "Potential vulnerability pattern"),
+#                 "cwe": item.get("cwe", "unknown"),
+#                 "why": item.get("why", "Potentially unsafe coding pattern matched."),
+#                 "score": round(float(score), 4),
+#                 "matched_patterns": matched_patterns[:5],
+#                 "fix_suggestions": item.get("fix_suggestions", []),
+#             }
+#         )
 
-    candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-    return candidates[:top_k]
-
-
-def _default_fix_suggestions(line_text):
-    return [
-        {
-            "rank": 1,
-            "summary": "Replace unsafe operation with bounded or validated variant.",
-            "patch_hint": "Apply input length checks before write/copy and enforce explicit bounds.",
-            "safety_notes": "Reject or safely truncate oversized input; avoid silent overflow.",
-        },
-        {
-            "rank": 2,
-            "summary": "Introduce early guard checks on risky inputs.",
-            "patch_hint": "Validate pointers, sizes, and indices before dereference or memory copy.",
-            "safety_notes": "Keep checks adjacent to the vulnerable operation for maintainability.",
-        },
-    ]
+#     candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+#     return candidates[:top_k]
 
 
-def _fallback_guidance(line_text, evidence):
-    if evidence:
-        best = evidence[0]
-        fixes = best.get("fix_suggestions", []) or []
-        ranked = []
-        for idx, item in enumerate(fixes[:3], 1):
-            ranked.append(
-                {
-                    "rank": idx,
-                    "summary": item.get("summary", "Apply a safer replacement."),
-                    "patch_hint": item.get("patch_hint", "Add checks and safe API usage."),
-                    "safety_notes": item.get("safety_notes", "Verify behavior with boundary tests."),
-                }
-            )
-        if not ranked:
-            ranked = _default_fix_suggestions(line_text)
-        return {
-            "title": best.get("title", "Potential vulnerability pattern"),
-            "cwe": best.get("cwe", "unknown"),
-            "explanation": best.get("why", "Potentially unsafe code pattern detected."),
-            "fix_suggestions": ranked,
-        }
-
-    return {
-        "title": "Potential vulnerability pattern",
-        "cwe": "unknown",
-        "explanation": "Potentially risky operation detected by line-level localization.",
-        "fix_suggestions": _default_fix_suggestions(line_text),
-    }
+# def _default_fix_suggestions(line_text):
+#     return [
+#         {
+#             "rank": 1,
+#             "summary": "Replace unsafe operation with bounded or validated variant.",
+#             "patch_hint": "Apply input length checks before write/copy and enforce explicit bounds.",
+#             "safety_notes": "Reject or safely truncate oversized input; avoid silent overflow.",
+#         },
+#         {
+#             "rank": 2,
+#             "summary": "Introduce early guard checks on risky inputs.",
+#             "patch_hint": "Validate pointers, sizes, and indices before dereference or memory copy.",
+#             "safety_notes": "Keep checks adjacent to the vulnerable operation for maintainability.",
+#         },
+#     ]
 
 
-def _safe_json_loads(text):
-    payload = (text or "").strip()
-    if not payload:
-        return None
-    try:
-        return json.loads(payload)
-    except Exception:
-        left = payload.find("{")
-        right = payload.rfind("}")
-        if left >= 0 and right > left:
-            try:
-                return json.loads(payload[left:right + 1])
-            except Exception:
-                return None
-    return None
+# def _fallback_guidance(line_text, evidence):
+#     if evidence:
+#         best = evidence[0]
+#         fixes = best.get("fix_suggestions", []) or []
+#         ranked = []
+#         for idx, item in enumerate(fixes[:3], 1):
+#             ranked.append(
+#                 {
+#                     "rank": idx,
+#                     "summary": item.get("summary", "Apply a safer replacement."),
+#                     "patch_hint": item.get("patch_hint", "Add checks and safe API usage."),
+#                     "safety_notes": item.get("safety_notes", "Verify behavior with boundary tests."),
+#                 }
+#             )
+#         if not ranked:
+#             ranked = _default_fix_suggestions(line_text)
+#         return {
+#             "title": best.get("title", "Potential vulnerability pattern"),
+#             "cwe": best.get("cwe", "unknown"),
+#             "explanation": best.get("why", "Potentially unsafe code pattern detected."),
+#             "fix_suggestions": ranked,
+#         }
+
+#     return {
+#         "title": "Potential vulnerability pattern",
+#         "cwe": "unknown",
+#         "explanation": "Potentially risky operation detected by line-level localization.",
+#         "fix_suggestions": _default_fix_suggestions(line_text),
+#     }
 
 
-def _call_ollama_for_guidance(line_no, line_text, context_text, evidence, runtime_cfg, timeout_ms):
-    evidence_lines = []
-    for idx, item in enumerate(evidence[:3], 1):
-        evidence_lines.append(
-            f"{idx}. {item.get('title', 'pattern')} ({item.get('cwe', 'unknown')}), reason={item.get('why', '')}"
-        )
+# def _safe_json_loads(text):
+#     payload = (text or "").strip()
+#     if not payload:
+#         return None
+#     try:
+#         return json.loads(payload)
+#     except Exception:
+#         left = payload.find("{")
+#         right = payload.rfind("}")
+#         if left >= 0 and right > left:
+#             try:
+#                 return json.loads(payload[left:right + 1])
+#             except Exception:
+#                 return None
+#     return None
 
-    prompt = (
-        "You are a secure C/C++ code reviewer.\n"
-        "Given vulnerable line context and CWE candidate evidence, classify the most likely CWE and return strict JSON only with keys: "
-        "title, cwe, explanation, confidence, fix_suggestions.\n"
-        "For cwe, output a canonical CWE id such as CWE-119, CWE-120, CWE-787, CWE-416, etc.\n"
-        "fix_suggestions must be an array of objects with keys: summary, patch_hint, safety_notes.\n"
-        "Keep explanation under 2 sentences and suggestions concise.\n\n"
-        f"Target line number: {line_no}\n"
-        f"Target line text: {line_text}\n\n"
-        "Context window:\n"
-        f"{context_text}\n\n"
-        "Retrieved CWE candidates:\n"
-        + "\n".join(evidence_lines)
-    )
 
-    candidate_models = []
-    for model_name in [runtime_cfg.get("ollama_model", "")] + list(runtime_cfg.get("ollama_model_fallbacks", [])):
-        normalized = str(model_name).strip()
-        if normalized and normalized not in candidate_models:
-            candidate_models.append(normalized)
+# def _call_ollama_for_guidance(line_no, line_text, context_text, evidence, runtime_cfg, timeout_ms):
+#     evidence_lines = []
+#     for idx, item in enumerate(evidence[:3], 1):
+#         evidence_lines.append(
+#             f"{idx}. {item.get('title', 'pattern')} ({item.get('cwe', 'unknown')}), reason={item.get('why', '')}"
+#         )
 
-    last_error = None
-    chosen_model = None
-    structured = None
+#     prompt = (
+#         "You are a secure C/C++ code reviewer.\n"
+#         "Given vulnerable line context and CWE candidate evidence, classify the most likely CWE and return strict JSON only with keys: "
+#         "title, cwe, explanation, confidence, fix_suggestions.\n"
+#         "For cwe, output a canonical CWE id such as CWE-119, CWE-120, CWE-787, CWE-416, etc.\n"
+#         "fix_suggestions must be an array of objects with keys: summary, patch_hint, safety_notes.\n"
+#         "Keep explanation under 2 sentences and suggestions concise.\n\n"
+#         f"Target line number: {line_no}\n"
+#         f"Target line text: {line_text}\n\n"
+#         "Context window:\n"
+#         f"{context_text}\n\n"
+#         "Retrieved CWE candidates:\n"
+#         + "\n".join(evidence_lines)
+#     )
 
-    for model_name in candidate_models:
-        payload = {
-            "model": model_name,
-            "prompt": prompt,
-            "stream": False,
-            "temperature": runtime_cfg["llm_temperature"],
-        }
+#     candidate_models = []
+#     for model_name in [runtime_cfg.get("ollama_model", "")] + list(runtime_cfg.get("ollama_model_fallbacks", [])):
+#         normalized = str(model_name).strip()
+#         if normalized and normalized not in candidate_models:
+#             candidate_models.append(normalized)
 
-        headers = {"Content-Type": "application/json"}
-        api_key = str(runtime_cfg.get("ollama_api_key", "")).strip()
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+#     last_error = None
+#     chosen_model = None
+#     structured = None
 
-        req = urllib_request.Request(
-            runtime_cfg["ollama_url"],
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
+#     for model_name in candidate_models:
+#         payload = {
+#             "model": model_name,
+#             "prompt": prompt,
+#             "stream": False,
+#             "temperature": runtime_cfg["llm_temperature"],
+#         }
 
-        try:
-            with urllib_request.urlopen(req, timeout=max(1.0, timeout_ms / 1000.0)) as resp:
-                body = resp.read().decode("utf-8", errors="ignore")
-        except (urllib_error.URLError, TimeoutError, ValueError) as exc:
-            last_error = str(exc)
-            continue
-        except Exception as exc:
-            last_error = str(exc)
-            continue
+#         headers = {"Content-Type": "application/json"}
+#         api_key = str(runtime_cfg.get("ollama_api_key", "")).strip()
+#         if api_key:
+#             headers["Authorization"] = f"Bearer {api_key}"
 
-        parsed = _safe_json_loads(body)
-        if not isinstance(parsed, dict):
-            last_error = "provider_response_not_json"
-            continue
+#         req = urllib_request.Request(
+#             runtime_cfg["ollama_url"],
+#             data=json.dumps(payload).encode("utf-8"),
+#             headers=headers,
+#             method="POST",
+#         )
 
-        llm_text = parsed.get("response", "")
-        structured = _safe_json_loads(llm_text)
-        if not isinstance(structured, dict):
-            last_error = "model_response_not_structured_json"
-            continue
+#         try:
+#             with urllib_request.urlopen(req, timeout=max(1.0, timeout_ms / 1000.0)) as resp:
+#                 body = resp.read().decode("utf-8", errors="ignore")
+#         except (urllib_error.URLError, TimeoutError, ValueError) as exc:
+#             last_error = str(exc)
+#             continue
+#         except Exception as exc:
+#             last_error = str(exc)
+#             continue
 
-        chosen_model = model_name
-        break
+#         parsed = _safe_json_loads(body)
+#         if not isinstance(parsed, dict):
+#             last_error = "provider_response_not_json"
+#             continue
 
-    if not isinstance(structured, dict):
-        return None, last_error
+#         llm_text = parsed.get("response", "")
+#         structured = _safe_json_loads(llm_text)
+#         if not isinstance(structured, dict):
+#             last_error = "model_response_not_structured_json"
+#             continue
 
-    fixes = structured.get("fix_suggestions", [])
-    if not isinstance(fixes, list):
-        fixes = []
+#         chosen_model = model_name
+#         break
 
-    normalized_fixes = []
-    for idx, item in enumerate(fixes[:3], 1):
-        if not isinstance(item, dict):
-            continue
-        normalized_fixes.append(
-            {
-                "rank": idx,
-                "summary": str(item.get("summary", "Apply safer coding pattern.")),
-                "patch_hint": str(item.get("patch_hint", "Add validation and bounded operations.")),
-                "safety_notes": str(item.get("safety_notes", "Re-test edge cases after patch.")),
-            }
-        )
+#     if not isinstance(structured, dict):
+#         return None, last_error
 
-    confidence = structured.get("confidence", 0.65)
-    try:
-        confidence = float(confidence)
-    except Exception:
-        confidence = 0.65
-    confidence = min(1.0, max(0.0, confidence))
+#     fixes = structured.get("fix_suggestions", [])
+#     if not isinstance(fixes, list):
+#         fixes = []
 
-    return {
-        "title": str(structured.get("title", "LLM-guided vulnerability finding")),
-        "cwe": str(structured.get("cwe", "unknown")),
-        "explanation": str(structured.get("explanation", "Potentially vulnerable code segment.")),
-        "fix_suggestions": normalized_fixes,
-        "llm_confidence": confidence,
-        "model_used": chosen_model,
-    }, None
+#     normalized_fixes = []
+#     for idx, item in enumerate(fixes[:3], 1):
+#         if not isinstance(item, dict):
+#             continue
+#         normalized_fixes.append(
+#             {
+#                 "rank": idx,
+#                 "summary": str(item.get("summary", "Apply safer coding pattern.")),
+#                 "patch_hint": str(item.get("patch_hint", "Add validation and bounded operations.")),
+#                 "safety_notes": str(item.get("safety_notes", "Re-test edge cases after patch.")),
+#             }
+#         )
+
+#     confidence = structured.get("confidence", 0.65)
+#     try:
+#         confidence = float(confidence)
+#     except Exception:
+#         confidence = 0.65
+#     confidence = min(1.0, max(0.0, confidence))
+
+#     return {
+#         "title": str(structured.get("title", "LLM-guided vulnerability finding")),
+#         "cwe": str(structured.get("cwe", "unknown")),
+#         "explanation": str(structured.get("explanation", "Potentially vulnerable code segment.")),
+#         "fix_suggestions": normalized_fixes,
+#         "llm_confidence": confidence,
+#         "model_used": chosen_model,
+#     }, None
 
 
 def _dedupe_preserve_order(values):
@@ -1016,173 +1015,173 @@ def _merge_static_findings(model_findings, static_findings):
     return merged
 
 
-def _build_rag_findings(raw_code, vulnerable_lines, base_prob, runtime_cfg):
-    started = time.time()
-    findings = []
-    llm_used = 0
-    retrieval_hits = 0
-    cache_hits = 0
-    degraded = False
-    errors = []
-    models_used = []
-    processed_lines = set()
-    cwe_catalog = _get_cwe_catalog(runtime_cfg)
+# def _build_rag_findings(raw_code, vulnerable_lines, base_prob, runtime_cfg):
+#     started = time.time()
+#     findings = []
+#     llm_used = 0
+#     retrieval_hits = 0
+#     cache_hits = 0
+#     degraded = False
+#     errors = []
+#     models_used = []
+#     processed_lines = set()
+#     cwe_catalog = _get_cwe_catalog(runtime_cfg)
 
-    if not vulnerable_lines:
-        return findings, {
-            "enabled": runtime_cfg.get("enabled", False),
-            "llm_enabled": runtime_cfg.get("llm_enabled", False),
-            "mode": "empty",
-            "elapsed_ms": 0,
-            "cwe_catalog_count": len(cwe_catalog),
-            "cwe_catalog_source": CWE_CATALOG_STATE.get("source", "unknown"),
-        }
+#     if not vulnerable_lines:
+#         return findings, {
+#             "enabled": runtime_cfg.get("enabled", False),
+#             "llm_enabled": runtime_cfg.get("llm_enabled", False),
+#             "mode": "empty",
+#             "elapsed_ms": 0,
+#             "cwe_catalog_count": len(cwe_catalog),
+#             "cwe_catalog_source": CWE_CATALOG_STATE.get("source", "unknown"),
+#         }
 
-    for rank, line_no in enumerate(vulnerable_lines[:runtime_cfg["max_lines"]], 1):
-        line_no = _refine_focus_line(raw_code, line_no, runtime_cfg["window"])
-        if line_no in processed_lines:
-            continue
-        processed_lines.add(line_no)
-        ctx = _extract_context_window(raw_code, line_no, runtime_cfg["window"])
-        line_text = ctx["focus_line_text"]
-        line_risk = _score_line_risk(line_text)
-        if rank > 1 and line_risk < runtime_cfg.get("min_line_risk", 0.45):
-            continue
-        context_text = ctx["snippet"]
+#     for rank, line_no in enumerate(vulnerable_lines[:runtime_cfg["max_lines"]], 1):
+#         line_no = _refine_focus_line(raw_code, line_no, runtime_cfg["window"])
+#         if line_no in processed_lines:
+#             continue
+#         processed_lines.add(line_no)
+#         ctx = _extract_context_window(raw_code, line_no, runtime_cfg["window"])
+#         line_text = ctx["focus_line_text"]
+#         line_risk = _score_line_risk(line_text)
+#         if rank > 1 and line_risk < runtime_cfg.get("min_line_risk", 0.45):
+#             continue
+#         context_text = ctx["snippet"]
 
-        cache_key = hashlib.sha256(
-            (
-                f"{line_no}|{rank}|{context_text}|{line_text}|{runtime_cfg['top_k']}|"
-                f"{runtime_cfg['max_lines']}|{round(float(base_prob), 6)}"
-            ).encode("utf-8")
-        ).hexdigest()
+#         cache_key = hashlib.sha256(
+#             (
+#                 f"{line_no}|{rank}|{context_text}|{line_text}|{runtime_cfg['top_k']}|"
+#                 f"{runtime_cfg['max_lines']}|{round(float(base_prob), 6)}"
+#             ).encode("utf-8")
+#         ).hexdigest()
 
-        if runtime_cfg.get("cache_enabled") and cache_key in RAG_CACHE:
-            cached = dict(RAG_CACHE[cache_key])
-            cached["line"] = line_no
-            findings.append(cached)
-            cache_hits += 1
-            continue
+#         if runtime_cfg.get("cache_enabled") and cache_key in RAG_CACHE:
+#             cached = dict(RAG_CACHE[cache_key])
+#             cached["line"] = line_no
+#             findings.append(cached)
+#             cache_hits += 1
+#             continue
 
-        evidence = _retrieve_evidence(line_text, context_text, runtime_cfg["top_k"], cwe_catalog)
-        if evidence:
-            retrieval_hits += 1
-        retrieval_score = evidence[0]["score"] if evidence else 0.0
+#         evidence = _retrieve_evidence(line_text, context_text, runtime_cfg["top_k"], cwe_catalog)
+#         if evidence:
+#             retrieval_hits += 1
+#         retrieval_score = evidence[0]["score"] if evidence else 0.0
 
-        guidance = _fallback_guidance(line_text, evidence)
-        generation_mode = "retrieval_rule"
-        llm_confidence = 0.0
-        llm_result = None
-        llm_error = None
+#         guidance = _fallback_guidance(line_text, evidence)
+#         generation_mode = "retrieval_rule"
+#         llm_confidence = 0.0
+#         llm_result = None
+#         llm_error = None
 
-        if runtime_cfg.get("llm_enabled") and runtime_cfg.get("llm_provider") == "ollama":
-            elapsed_ms = int((time.time() - started) * 1000)
-            if elapsed_ms < runtime_cfg["total_budget_ms"]:
-                remaining_ms = max(500, runtime_cfg["total_budget_ms"] - elapsed_ms)
-                timeout_ms = min(runtime_cfg["llm_timeout_ms"], remaining_ms)
-                llm_result, llm_error = _call_ollama_for_guidance(
-                    line_no=line_no,
-                    line_text=line_text,
-                    context_text=context_text,
-                    evidence=evidence,
-                    runtime_cfg=runtime_cfg,
-                    timeout_ms=timeout_ms,
-                )
-                if llm_result:
-                    generation_mode = "llm_rag"
-                    llm_used += 1
-                    llm_confidence = llm_result.get("llm_confidence", 0.65)
-                    if llm_result.get("model_used"):
-                        models_used.append(str(llm_result.get("model_used")))
-                    guidance["title"] = llm_result.get("title", guidance["title"])
-                    guidance["cwe"] = llm_result.get("cwe", guidance["cwe"])
-                    guidance["explanation"] = llm_result.get("explanation", guidance["explanation"])
-                    if llm_result.get("fix_suggestions"):
-                        guidance["fix_suggestions"] = llm_result["fix_suggestions"]
-                else:
-                    degraded = True
-                    if llm_error:
-                        errors.append(f"llm_unavailable_line_{line_no}:{llm_error}")
-                    else:
-                        errors.append(f"llm_unavailable_line_{line_no}")
-            else:
-                degraded = True
-                errors.append(f"llm_budget_exceeded_before_line_{line_no}")
+#         if runtime_cfg.get("llm_enabled") and runtime_cfg.get("llm_provider") == "ollama":
+#             elapsed_ms = int((time.time() - started) * 1000)
+#             if elapsed_ms < runtime_cfg["total_budget_ms"]:
+#                 remaining_ms = max(500, runtime_cfg["total_budget_ms"] - elapsed_ms)
+#                 timeout_ms = min(runtime_cfg["llm_timeout_ms"], remaining_ms)
+#                 llm_result, llm_error = _call_ollama_for_guidance(
+#                     line_no=line_no,
+#                     line_text=line_text,
+#                     context_text=context_text,
+#                     evidence=evidence,
+#                     runtime_cfg=runtime_cfg,
+#                     timeout_ms=timeout_ms,
+#                 )
+#                 if llm_result:
+#                     generation_mode = "llm_rag"
+#                     llm_used += 1
+#                     llm_confidence = llm_result.get("llm_confidence", 0.65)
+#                     if llm_result.get("model_used"):
+#                         models_used.append(str(llm_result.get("model_used")))
+#                     guidance["title"] = llm_result.get("title", guidance["title"])
+#                     guidance["cwe"] = llm_result.get("cwe", guidance["cwe"])
+#                     guidance["explanation"] = llm_result.get("explanation", guidance["explanation"])
+#                     if llm_result.get("fix_suggestions"):
+#                         guidance["fix_suggestions"] = llm_result["fix_suggestions"]
+#                 else:
+#                     degraded = True
+#                     if llm_error:
+#                         errors.append(f"llm_unavailable_line_{line_no}:{llm_error}")
+#                     else:
+#                         errors.append(f"llm_unavailable_line_{line_no}")
+#             else:
+#                 degraded = True
+#                 errors.append(f"llm_budget_exceeded_before_line_{line_no}")
 
-        retrieval_component = min(1.0, retrieval_score / 6.0)
-        line_rank_component = max(0.2, 1.0 - ((rank - 1) / max(1, runtime_cfg["max_lines"])))
-        final_conf = min(
-            1.0,
-            max(
-                0.0,
-                (0.55 * float(base_prob))
-                + (0.25 * retrieval_component)
-                + (0.10 * line_rank_component)
-                + (0.10 * llm_confidence),
-            ),
-        )
+#         retrieval_component = min(1.0, retrieval_score / 6.0)
+#         line_rank_component = max(0.2, 1.0 - ((rank - 1) / max(1, runtime_cfg["max_lines"])))
+#         final_conf = min(
+#             1.0,
+#             max(
+#                 0.0,
+#                 (0.55 * float(base_prob))
+#                 + (0.25 * retrieval_component)
+#                 + (0.10 * line_rank_component)
+#                 + (0.10 * llm_confidence),
+#             ),
+#         )
 
-        finding = {
-            "line": int(line_no),
-            "title": guidance["title"],
-            "cwe": guidance["cwe"],
-            "explanation": guidance["explanation"],
-            "context_window": {
-                "start_line": ctx["start_line"],
-                "end_line": ctx["end_line"],
-                "snippet": ctx["snippet"],
-            },
-            "evidence": [
-                {
-                    "id": item.get("id", "rule-unknown"),
-                    "title": item.get("title", "pattern"),
-                    "cwe": item.get("cwe", "unknown"),
-                    "score": item.get("score", 0.0),
-                    "matched_patterns": item.get("matched_patterns", []),
-                }
-                for item in evidence
-            ],
-            "fix_suggestions": guidance["fix_suggestions"],
-            "confidence": {
-                "detector_probability": float(base_prob),
-                "retrieval_score": float(retrieval_component),
-                "llm_score": float(llm_confidence),
-                "final": float(final_conf),
-            },
-            "generation_mode": generation_mode,
-        }
+#         finding = {
+#             "line": int(line_no),
+#             "title": guidance["title"],
+#             "cwe": guidance["cwe"],
+#             "explanation": guidance["explanation"],
+#             "context_window": {
+#                 "start_line": ctx["start_line"],
+#                 "end_line": ctx["end_line"],
+#                 "snippet": ctx["snippet"],
+#             },
+#             "evidence": [
+#                 {
+#                     "id": item.get("id", "rule-unknown"),
+#                     "title": item.get("title", "pattern"),
+#                     "cwe": item.get("cwe", "unknown"),
+#                     "score": item.get("score", 0.0),
+#                     "matched_patterns": item.get("matched_patterns", []),
+#                 }
+#                 for item in evidence
+#             ],
+#             "fix_suggestions": guidance["fix_suggestions"],
+#             "confidence": {
+#                 "detector_probability": float(base_prob),
+#                 "retrieval_score": float(retrieval_component),
+#                 "llm_score": float(llm_confidence),
+#                 "final": float(final_conf),
+#             },
+#             "generation_mode": generation_mode,
+#         }
 
-        if llm_result and llm_result.get("model_used"):
-            finding["llm_model"] = str(llm_result.get("model_used"))
+#         if llm_result and llm_result.get("model_used"):
+#             finding["llm_model"] = str(llm_result.get("model_used"))
 
-        if runtime_cfg.get("cache_enabled"):
-            RAG_CACHE[cache_key] = dict(finding)
+#         if runtime_cfg.get("cache_enabled"):
+#             RAG_CACHE[cache_key] = dict(finding)
 
-        findings.append(finding)
+#         findings.append(finding)
 
-    elapsed_ms = max(1, int((time.time() - started) * 1000))
-    metadata = {
-        "enabled": runtime_cfg.get("enabled", False),
-        "llm_enabled": runtime_cfg.get("llm_enabled", False),
-        "provider": runtime_cfg.get("llm_provider", "none"),
-        "selected_model": runtime_cfg.get("ollama_model", ""),
-        "model_fallbacks": runtime_cfg.get("ollama_model_fallbacks", []),
-        "models_used": _dedupe_preserve_order(models_used),
-        "top_k": runtime_cfg.get("top_k", 0),
-        "max_lines": runtime_cfg.get("max_lines", 0),
-        "window": runtime_cfg.get("window", 0),
-        "llm_used": llm_used,
-        "retrieval_hits": retrieval_hits,
-        "cache_hits": cache_hits,
-        "degraded": degraded,
-        "errors": errors[:10],
-        "elapsed_ms": elapsed_ms,
-        "mode": "llm_rag" if llm_used > 0 else "retrieval_rule",
-        "cwe_catalog_count": len(cwe_catalog),
-        "cwe_catalog_source": CWE_CATALOG_STATE.get("source", "unknown"),
-        "cwe_catalog_last_error": CWE_CATALOG_STATE.get("last_error", ""),
-    }
-    return findings, metadata
+#     elapsed_ms = max(1, int((time.time() - started) * 1000))
+#     metadata = {
+#         "enabled": runtime_cfg.get("enabled", False),
+#         "llm_enabled": runtime_cfg.get("llm_enabled", False),
+#         "provider": runtime_cfg.get("llm_provider", "none"),
+#         "selected_model": runtime_cfg.get("ollama_model", ""),
+#         "model_fallbacks": runtime_cfg.get("ollama_model_fallbacks", []),
+#         "models_used": _dedupe_preserve_order(models_used),
+#         "top_k": runtime_cfg.get("top_k", 0),
+#         "max_lines": runtime_cfg.get("max_lines", 0),
+#         "window": runtime_cfg.get("window", 0),
+#         "llm_used": llm_used,
+#         "retrieval_hits": retrieval_hits,
+#         "cache_hits": cache_hits,
+#         "degraded": degraded,
+#         "errors": errors[:10],
+#         "elapsed_ms": elapsed_ms,
+#         "mode": "llm_rag" if llm_used > 0 else "retrieval_rule",
+#         "cwe_catalog_count": len(cwe_catalog),
+#         "cwe_catalog_source": CWE_CATALOG_STATE.get("source", "unknown"),
+#         "cwe_catalog_last_error": CWE_CATALOG_STATE.get("last_error", ""),
+#     }
+#     return findings, metadata
 
 # ============================================================================
 # STEP 1: SETUP - Load Tokenizers and Config
@@ -1594,23 +1593,23 @@ def predict_vulnerability(raw_code, ast_repr, pdg_repr, cfg_repr):
         "mode": "disabled",
         "elapsed_ms": 0,
     }
-    if runtime_cfg.get("enabled"):
-        findings, rag_metadata = _build_rag_findings(
-            raw_code=raw_code,
-            vulnerable_lines=vulnerable_lines,
-            base_prob=base_prob,
-            runtime_cfg=runtime_cfg,
-        )
-        if findings:
-            finding_lines = _dedupe_preserve_order(
-                [
-                    int(item.get("line"))
-                    for item in findings
-                    if isinstance(item, dict) and isinstance(item.get("line"), int)
-                ]
-            )
-            if finding_lines:
-                vulnerable_lines = finding_lines
+    # if runtime_cfg.get("enabled"):
+    #     findings, rag_metadata = _build_rag_findings(
+    #         raw_code=raw_code,
+    #         vulnerable_lines=vulnerable_lines,
+    #         base_prob=base_prob,
+    #         runtime_cfg=runtime_cfg,
+    #     )
+    #     if findings:
+    #         finding_lines = _dedupe_preserve_order(
+    #             [
+    #                 int(item.get("line"))
+    #                 for item in findings
+    #                 if isinstance(item, dict) and isinstance(item.get("line"), int)
+    #             ]
+    #         )
+    #         if finding_lines:
+    #             vulnerable_lines = finding_lines
 
     if static_findings:
         findings = _merge_static_findings(findings, static_findings)
