@@ -8,6 +8,10 @@ It supports two execution modes:
 
 Local mode can use a persistent inference server to avoid cold starts and keep caches warm.
 
+## VS Code Extension Workflow Diagram
+
+- Draw.io source: `vscode-extension-workflow.drawio`
+
 ## Commands
 
 - Vul Extension: Analyze Active Editor
