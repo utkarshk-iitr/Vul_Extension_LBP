@@ -183,7 +183,7 @@ def _env_csv(name, default_values):
 def get_rag_runtime_config():
     prefer_cloud = _env_bool("VUL_MODEL_USE_CLOUD", True)
     local_model = os.getenv("VUL_OLLAMA_LOCAL_MODEL", "qwen2.5-coder:3b")
-    cloud_model = os.getenv("VUL_OLLAMA_CLOUD_MODEL", "qwen3-coder:cloud")
+    cloud_model = os.getenv("VUL_OLLAMA_CLOUD_MODEL", "gpt-oss:120b-cloud")
     explicit_model = os.getenv("VUL_OLLAMA_MODEL")
     local_url = os.getenv("VUL_OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
     cloud_url = os.getenv("VUL_OLLAMA_CLOUD_URL", "")
@@ -207,9 +207,8 @@ def get_rag_runtime_config():
         "ollama_model_fallbacks": _env_csv(
             "VUL_OLLAMA_MODEL_FALLBACKS",
             [
-                "qwen3-coder:cloud",
-                "llama4:cloud",
-                "mistral-large:cloud",
+                "gpt-oss:120b-cloud",
+                "gpt-oss:20b-cloud",
             ],
         ),
         "llm_timeout_ms": max(500, _env_int("VUL_LLM_TIMEOUT_MS", 8000)),

@@ -1,0 +1,21 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Model weights and checkpoints
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.h5
+saved_models/
+checkpoint-*/
+
+# Python
+__pycache__/
+*.pyc
+
+# Node
+node_modules/

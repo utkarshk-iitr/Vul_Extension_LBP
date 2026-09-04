@@ -7,6 +7,26 @@ const https = require('https');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 
+function loadEnvFile(envPath) {
+  if (!fs.existsSync(envPath)) return;
+  const lines = fs.readFileSync(envPath, 'utf8').split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!(key in process.env)) {
+      process.env[key] = value;
+    }
+  }
+}
+loadEnvFile(path.join(__dirname, '.env'));
+
 let server = null;
 const output = vscode.window.createOutputChannel('Vul Extension');
 const diagnostics = vscode.languages.createDiagnosticCollection('vulExtension');
@@ -269,16 +289,16 @@ function normalizeOllamaGenerateUrl(rawUrl) {
 function buildRagEnv(config) {
   const useCloud = config.get('vulServer.useCloudModel', true);
   const ollamaModel = String(config.get('vulServer.ollamaModel', 'qwen2.5-coder:3b'));
-  const cloudModel = String(config.get('vulServer.ollamaCloudModel', 'qwen3-coder:cloud'));
+  const cloudModel = String(config.get('vulServer.ollamaCloudModel', 'gpt-oss:120b-cloud'));
   const localUrl = Object.is(useCloud, false) ? normalizeOllamaGenerateUrl(config.get('vulServer.ollamaUrl', 'http://127.0.0.1:11434/api/generate')) : '';
   const cloudUrl = normalizeOllamaGenerateUrl(config.get('vulServer.ollamaCloudUrl', ''));
   const selectedUrl = useCloud ? cloudUrl : localUrl;
-  const apiKey = String(config.get('vulServer.ollamaApiKey', '')).trim();
+  const apiKey = String(config.get('vulServer.ollamaApiKey', '') || process.env.VUL_OLLAMA_API_KEY || '').trim();
   const localFallbacks = String(
     config.get('vulServer.ollamaLocalFallbacks', 'qwen2.5-coder:3b,mistral:7b-instruct,llama3.2:3b-instruct')
   );
   const cloudFallbacks = String(
-    config.get('vulServer.ollamaCloudFallbacks', 'qwen3-coder:cloud,llama4:cloud,mistral-large:cloud')
+    config.get('vulServer.ollamaCloudFallbacks', 'gpt-oss:120b-cloud,gpt-oss:20b-cloud')
   );
   const cweCatalogUrl = String(config.get('vulServer.cweCatalogUrl', 'https://cwe.mitre.org/data/xml/cwec_latest.xml.zip')).trim();
   const cweCachePath = String(config.get('vulServer.cweCachePath', '')).trim();
@@ -674,15 +694,17 @@ function tryParseJsonLoose(text) {
 
 function getFixLlmConfig(config) {
   const useCloud = config.get('vulServer.useCloudModel', true) === true;
-  const cloudUrl = useCloud ? normalizeOllamaGenerateUrl(config.get('vulServer.ollamaCloudUrl', '') || '') : '';
-  const localUrl = !useCloud ? normalizeOllamaGenerateUrl(config.get('vulServer.ollamaUrl', 'http://127.0.0.1:11434/api/generate') || '') : '';
-  const cloudModel = String(config.get('vulServer.ollamaCloudModel', 'qwen3-coder:cloud') || '').trim();
-  const cloudFallbacks = splitCsvList(config.get('vulServer.ollamaCloudFallbacks', 'qwen3-coder:cloud,llama4:cloud,mistral-large:cloud'));
+  // Keep both endpoints available regardless of preference so that a dead or
+  // unreachable primary can fall through to the other one.
+  const cloudUrl = normalizeOllamaGenerateUrl(config.get('vulServer.ollamaCloudUrl', '') || '');
+  const localUrl = normalizeOllamaGenerateUrl(config.get('vulServer.ollamaUrl', 'http://127.0.0.1:11434/api/generate') || '');
+  const cloudModel = String(config.get('vulServer.ollamaCloudModel', 'gpt-oss:120b-cloud') || '').trim();
+  const cloudFallbacks = splitCsvList(config.get('vulServer.ollamaCloudFallbacks', 'gpt-oss:120b-cloud,gpt-oss:20b-cloud'));
   const localModel = String(config.get('vulServer.ollamaModel', 'qwen2.5-coder:3b') || '').trim();
   const localFallbacks = splitCsvList(config.get('vulServer.ollamaLocalFallbacks', 'qwen2.5-coder:3b,mistral:7b-instruct,llama3.2:3b-instruct'));
   const timeoutMs = Math.max(1000, Number(config.get('vulServer.llmTimeoutMs', 120000)) || 120000);
   const temperature = Number(config.get('vulServer.llmTemperature', 0.1)) || 0.1;
-  const apiKey = String(config.get('vulServer.ollamaApiKey', '') || '').trim();
+  const apiKey = String(config.get('vulServer.ollamaApiKey', '') || process.env.VUL_OLLAMA_API_KEY || '').trim();
 
   const cloudModels = [];
   for (const candidate of [cloudModel, ...cloudFallbacks]) {
@@ -731,7 +753,42 @@ function getFixLlmConfig(config) {
   };
 }
 
-function httpPostJson(targetUrl, bodyObj, headers, timeoutMs) {
+function makeHttpStatusError(status, body) {
+  const err = new Error(`Ollama HTTP ${status}: ${String(body).slice(0, 300)}`);
+  err.isHttpStatus = true;
+  return err;
+}
+
+// Preferred transport. The extension host patches Node's http/https modules for
+// proxy support, which injects JS callbacks into the response parser; when one
+// of those throws, llhttp surfaces the opaque "Parse Error: JS Exception".
+// fetch() uses a separate stack and is not affected.
+async function httpPostJsonViaFetch(targetUrl, bodyObj, headers, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(targetUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(headers || {}) },
+      body: JSON.stringify(bodyObj),
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw makeHttpStatusError(res.status, text);
+    }
+    return text;
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw new Error(`Ollama request timeout after ${timeoutMs} ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function httpPostJsonViaNode(targetUrl, bodyObj, headers, timeoutMs) {
   return new Promise((resolve, reject) => {
     let urlObj;
     try {
@@ -750,6 +807,9 @@ function httpPostJson(targetUrl, bodyObj, headers, timeoutMs) {
         hostname: urlObj.hostname,
         port: urlObj.port || (isHttps ? 443 : 80),
         path: `${urlObj.pathname || '/'}${urlObj.search || ''}`,
+        // Tolerate responses the strict parser rejects; this path is only
+        // reached after the primary transport has already failed.
+        insecureHTTPParser: true,
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(payload),
@@ -765,7 +825,7 @@ function httpPostJson(targetUrl, bodyObj, headers, timeoutMs) {
         res.on('end', () => {
           const status = Number(res.statusCode || 0);
           if (status < 200 || status >= 300) {
-            reject(new Error(`Ollama HTTP ${status}: ${responseBody.slice(0, 300)}`));
+            reject(makeHttpStatusError(status, responseBody));
             return;
           }
           resolve(responseBody);
@@ -776,10 +836,39 @@ function httpPostJson(targetUrl, bodyObj, headers, timeoutMs) {
     req.setTimeout(timeoutMs, () => {
       req.destroy(new Error(`Ollama request timeout after ${timeoutMs} ms`));
     });
-    req.on('error', (err) => reject(err));
+    req.on('error', (err) => {
+      const code = err && err.code ? ` (${err.code})` : '';
+      const wrapped = new Error(`${String(err && err.message ? err.message : err)}${code}`);
+      reject(wrapped);
+    });
     req.write(payload);
     req.end();
   });
+}
+
+async function httpPostJson(targetUrl, bodyObj, headers, timeoutMs) {
+  let primaryError = null;
+  if (typeof fetch === 'function') {
+    try {
+      return await httpPostJsonViaFetch(targetUrl, bodyObj, headers, timeoutMs);
+    } catch (err) {
+      // A real HTTP status (404/410/401) is a definitive answer from the
+      // server, not a transport problem, so do not retry it.
+      if (err && err.isHttpStatus) {
+        throw err;
+      }
+      primaryError = err;
+    }
+  }
+
+  try {
+    return await httpPostJsonViaNode(targetUrl, bodyObj, headers, timeoutMs);
+  } catch (err) {
+    if (primaryError && !(err && err.isHttpStatus)) {
+      throw new Error(`${String(err && err.message ? err.message : err)} [fetch fallback also failed: ${String(primaryError.message || primaryError).slice(0, 120)}]`);
+    }
+    throw err;
+  }
 }
 
 function normalizeFixPatches(rawPatches) {
@@ -796,14 +885,25 @@ function normalizeFixPatches(rawPatches) {
     const startLine = Math.trunc(Number(patch.start_line));
     const endLine = Math.trunc(Number(patch.end_line));
     const replacement = String(patch.replacement || '');
-    if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || !replacement.trim()) {
+    const originalSnippet = String(patch.original_snippet || '');
+    if (!replacement.trim()) {
+      continue;
+    }
+
+    // A patch is usable if it carries either a locatable anchor snippet or a
+    // sane line range. Line numbers alone are unreliable: models routinely
+    // number the code as they would format it, not as it sits on disk.
+    const hasAnchor = originalSnippet.trim().length > 0;
+    const hasLineRange = Number.isFinite(startLine) && Number.isFinite(endLine);
+    if (!hasAnchor && !hasLineRange) {
       continue;
     }
 
     normalized.push({
       title: String(patch.title || 'Suggested fix').trim() || 'Suggested fix',
-      start_line: startLine,
-      end_line: endLine,
+      start_line: hasLineRange ? startLine : null,
+      end_line: hasLineRange ? endLine : null,
+      original_snippet: originalSnippet,
       replacement,
       summary: String(patch.summary || '').trim(),
       safety_notes: String(patch.safety_notes || '').trim(),
@@ -815,18 +915,120 @@ function normalizeFixPatches(rawPatches) {
   return normalized;
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Locate an anchor snippet in the document, tolerating whitespace drift between
+// what the model echoed back and what is actually on disk.
+function findSnippetRanges(document, snippet) {
+  const text = document.getText();
+  const needle = String(snippet || '');
+  if (!needle.trim()) {
+    return [];
+  }
+
+  const ranges = [];
+  let from = 0;
+  while (from <= text.length) {
+    const idx = text.indexOf(needle, from);
+    if (idx < 0) break;
+    ranges.push(new vscode.Range(document.positionAt(idx), document.positionAt(idx + needle.length)));
+    from = idx + Math.max(1, needle.length);
+  }
+  if (ranges.length > 0) {
+    return ranges;
+  }
+
+  // Whitespace-insensitive retry: collapse runs of whitespace into \s+ so that
+  // reformatted or re-indented echoes still match the original source.
+  const pattern = needle
+    .trim()
+    .split(/\s+/)
+    .map(escapeRegExp)
+    .join('\\s+');
+  if (!pattern) {
+    return [];
+  }
+
+  let re;
+  try {
+    re = new RegExp(pattern, 'g');
+  } catch (_) {
+    return [];
+  }
+
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    ranges.push(new vscode.Range(document.positionAt(match.index), document.positionAt(match.index + match[0].length)));
+    if (match.index === re.lastIndex) {
+      re.lastIndex += 1;
+    }
+  }
+  return ranges;
+}
+
+// Decide where a patch actually applies. Anchor text wins over line numbers;
+// an out-of-range line span is rejected outright rather than clamped, because
+// clamping silently rewrites the wrong region of the file.
+function resolvePatchRange(document, patch, targetLine) {
+  const anchors = findSnippetRanges(document, patch.original_snippet);
+  if (anchors.length === 1) {
+    return { range: anchors[0], strategy: 'anchor' };
+  }
+  if (anchors.length > 1) {
+    // Ambiguous anchor: prefer the occurrence closest to the reported finding.
+    const pivot = Math.max(0, Math.trunc(Number(targetLine) || 1) - 1);
+    let best = anchors[0];
+    let bestDistance = Math.abs(anchors[0].start.line - pivot);
+    for (const candidate of anchors.slice(1)) {
+      const distance = Math.abs(candidate.start.line - pivot);
+      if (distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+    return { range: best, strategy: 'anchor-nearest' };
+  }
+
+  const startLine = Math.trunc(Number(patch.start_line));
+  const endLine = Math.trunc(Number(patch.end_line));
+  if (!Number.isFinite(startLine) || !Number.isFinite(endLine)) {
+    return null;
+  }
+  if (startLine < 1 || endLine < startLine || endLine > document.lineCount) {
+    return null;
+  }
+
+  const endText = document.lineAt(endLine - 1).text;
+  return {
+    range: new vscode.Range(new vscode.Position(startLine - 1, 0), new vscode.Position(endLine - 1, endText.length)),
+    strategy: 'line-range',
+  };
+}
+
 function buildFixPrompt(payload) {
   return [
     'You are a secure code remediation assistant.',
     'Return STRICT JSON ONLY with object keys: patches, explanation.',
     'patches must be an array (max 3) of objects with keys:',
-    'title, start_line, end_line, replacement, summary, safety_notes, imports, confidence.',
+    'title, original_snippet, start_line, end_line, replacement, summary, safety_notes, imports, confidence.',
     'Rules:',
-    '- start_line/end_line are 1-based line numbers in the ORIGINAL file.',
-    '- replacement is the exact code that should replace that inclusive line range.',
+    '- original_snippet is REQUIRED: copy the exact substring of the original file that must be',
+    '  replaced, character for character, including its original spacing. Do not reformat it and',
+    '  do not paraphrase it. It is used to locate the edit, so it must appear verbatim in the file.',
+    '- Keep original_snippet as short as possible while still being unique in the file.',
+    '- start_line/end_line are 1-based line numbers in the ORIGINAL file as it is stored on disk.',
+    '  The file may keep an entire function on ONE physical line; in that case both are 1.',
+    '  Never invent line numbers from your own formatting of the code.',
+    '- replacement is the exact code that must take the place of original_snippet.',
     '- Keep edits minimal and compile-safe.',
     '- Do not include markdown or backticks.',
-    '- If uncertain, return patches as empty array and explain why.',
+    '- Ignore any <S2SV_StartBug> / <S2SV_EndBug> dataset markers: they are annotations, not code,',
+    '  and must be preserved verbatim if they fall inside the text you replace.',
+    '- If the stated CWE does not match the code, fix the real vulnerability you can see on the',
+    '  target line instead, and say so in explanation. Return an empty patches array only when the',
+    '  code genuinely has no fixable defect.',
     '',
     `Language: ${payload.languageId}`,
     `Target line: ${payload.targetLine}`,
@@ -879,61 +1081,115 @@ async function generateFixPatchesWithOllama(document, finding, suggestion) {
     fileContent,
   };
 
-  const prompt = buildFixPrompt(payload);
+  const basePrompt = buildFixPrompt(payload);
+  const retryPrompt = [
+    basePrompt,
+    '',
+    'PREVIOUS ATTEMPT FAILED. It returned no patch that could be located in the file.',
+    'Try again and obey these constraints exactly:',
+    '- You MUST return at least one patch unless the code is genuinely not fixable.',
+    '- original_snippet MUST be copied verbatim from the file content shown above. Before',
+    '  answering, re-read the file content and confirm your original_snippet appears in it',
+    '  character for character.',
+    '- Prefer a SHORT original_snippet (a single statement or expression) over a long one.',
+    '- If the stated CWE looks wrong for this code, fix the actual defect on the target line.',
+  ].join('\n');
+
   const headers = {};
   if (llmCfg.apiKey) {
     headers.Authorization = `Bearer ${llmCfg.apiKey}`;
   }
 
-  let lastError = null;
-  for (const endpoint of llmCfg.endpoints) {
-    const endpointUrl = endpoint.url;
-    const models = Array.isArray(endpoint.models) ? endpoint.models : [];
-    if (models.length === 0) {
-      continue;
-    }
+  const attempts = [];
+  const runPass = async (prompt, passLabel) => {
+    for (const endpoint of llmCfg.endpoints) {
+      const endpointUrl = endpoint.url;
+      const models = Array.isArray(endpoint.models) ? endpoint.models : [];
+      if (models.length === 0) {
+        continue;
+      }
 
-    for (const modelName of models) {
-      const requestBody = {
-        model: modelName,
-        prompt,
-        stream: false,
-        temperature: llmCfg.temperature,
-      };
-
-      try {
-        const responseText = await httpPostJson(endpointUrl, requestBody, headers, llmCfg.timeoutMs);
-        const topLevel = tryParseJsonLoose(responseText);
-        if (!topLevel || typeof topLevel !== 'object') {
-          lastError = 'provider_response_not_json';
-          continue;
-        }
-
-        const modelResponse = tryParseJsonLoose(String(topLevel.response || ''));
-        if (!modelResponse || typeof modelResponse !== 'object') {
-          lastError = 'model_response_not_structured_json';
-          continue;
-        }
-
-        const patches = normalizeFixPatches(modelResponse.patches);
-        if (patches.length === 0) {
-          lastError = String(modelResponse.explanation || 'model_returned_no_patches');
-          continue;
-        }
-
-        return {
-          patches,
-          modelName,
-          explanation: String(modelResponse.explanation || ''),
-          usingCloud: endpoint.type === 'cloud',
+      for (const modelName of models) {
+        const requestBody = {
+          model: modelName,
+          prompt,
+          stream: false,
+          format: 'json',
+          // Ollama only honours sampling parameters nested under `options`.
+          options: { temperature: llmCfg.temperature },
         };
-      } catch (err) {
-        lastError = String(err && err.message ? err.message : err);
+
+        const label = `${passLabel}/${endpoint.type}/${modelName}`;
+        try {
+          const responseText = await httpPostJson(endpointUrl, requestBody, headers, llmCfg.timeoutMs);
+          const topLevel = tryParseJsonLoose(responseText);
+          if (!topLevel || typeof topLevel !== 'object') {
+            attempts.push(`${label}: provider_response_not_json: ${responseText.slice(0, 160)}`);
+            continue;
+          }
+
+          if (topLevel.error) {
+            attempts.push(`${label}: ${String(topLevel.error).slice(0, 160)}`);
+            continue;
+          }
+
+          const modelResponse = tryParseJsonLoose(String(topLevel.response || ''));
+          if (!modelResponse || typeof modelResponse !== 'object') {
+            attempts.push(`${label}: model_response_not_structured_json: ${String(topLevel.response || '').slice(0, 160)}`);
+            continue;
+          }
+
+          const explanation = String(modelResponse.explanation || '');
+          const patches = normalizeFixPatches(modelResponse.patches);
+          if (patches.length === 0) {
+            attempts.push(`${label}: model returned no patches: ${explanation.slice(0, 160)}`);
+            continue;
+          }
+
+          // Keep only patches we can actually place in this document. An
+          // unplaceable patch is worse than none: clamping it would rewrite
+          // the wrong region.
+          const placed = [];
+          for (const patch of patches) {
+            const resolved = resolvePatchRange(document, patch, lineNo);
+            if (resolved) {
+              placed.push({ ...patch, range: resolved.range, strategy: resolved.strategy });
+            }
+          }
+
+          if (placed.length === 0) {
+            attempts.push(`${label}: ${patches.length} patch(es) could not be located in the file`);
+            continue;
+          }
+
+          return {
+            patches: placed,
+            modelName,
+            explanation,
+            usingCloud: endpoint.type === 'cloud',
+          };
+        } catch (err) {
+          attempts.push(`${label}: ${String(err && err.message ? err.message : err).slice(0, 160)}`);
+        }
       }
     }
+    return null;
+  };
+
+  const first = await runPass(basePrompt, 'pass1');
+  if (first) {
+    return first;
   }
 
-  throw new Error(`Fix generation failed: ${lastError || 'no_successful_model_response'}`);
+  const second = await runPass(retryPrompt, 'pass2');
+  if (second) {
+    return second;
+  }
+
+  const detail = attempts.length > 0 ? attempts.join(' | ') : 'no_successful_model_response';
+  const failure = new Error(`Fix generation failed: ${detail}`);
+  failure.attempts = attempts;
+  throw failure;
 }
 
 function computePythonImportInsertionLine(document) {
@@ -987,6 +1243,115 @@ function applyRequiredImports(edit, document, imports) {
   edit.insert(document.uri, new vscode.Position(insertLine, 0), importBlock);
 }
 
+function truncateForPreview(text, maxChars) {
+  const value = String(text || '');
+  return value.length > maxChars ? `${value.slice(0, maxChars)}…` : value;
+}
+
+function describePatchLocation(patch) {
+  if (!patch || !patch.range) {
+    return 'unknown location';
+  }
+  const startLine = patch.range.start.line + 1;
+  const endLine = patch.range.end.line + 1;
+  const where = startLine === endLine
+    ? `line ${startLine}, cols ${patch.range.start.character + 1}-${patch.range.end.character + 1}`
+    : `lines ${startLine}-${endLine}`;
+  return patch.strategy === 'line-range' ? where : `${where} (matched text)`;
+}
+
+// Guidance text comes from an LLM and is frequently multi-line and wrapped in
+// markdown fences. Every line must be commented out, or inserting it breaks the
+// file it is meant to annotate.
+function buildGuidanceComment(indent, prefix, parts) {
+  const lines = [`SECURITY (${parts.cwe}): ${parts.summary || 'Review this line.'}`];
+
+  const appendBlock = (label, body) => {
+    if (!body) {
+      return;
+    }
+    const cleaned = String(body)
+      .split('\n')
+      .map((line) => line.replace(/^\s*```[a-zA-Z0-9+-]*\s*$/, '').trimEnd())
+      .filter((line, idx, arr) => line.trim() !== '' || (idx > 0 && idx < arr.length - 1));
+    if (cleaned.length === 0) {
+      return;
+    }
+    lines.push(`${label}: ${cleaned[0].trim()}`);
+    for (const line of cleaned.slice(1)) {
+      lines.push(`  ${line.trim()}`);
+    }
+  };
+
+  appendBlock('Suggested change', parts.hint);
+  appendBlock('Safety', parts.notes);
+
+  return lines
+    .filter((line) => line.trim() !== '')
+    .map((line) => `${indent}${prefix} ${line}`.trimEnd())
+    .join('\n');
+}
+
+function getLineCommentPrefix(languageId) {
+  const hashLanguages = new Set(['python', 'shellscript', 'ruby', 'yaml', 'perl', 'makefile']);
+  if (hashLanguages.has(String(languageId || ''))) {
+    return '#';
+  }
+  return '//';
+}
+
+// Last-resort path when the model cannot produce a placeable patch: surface the
+// backend's concrete guidance so the run still ends with something actionable
+// instead of a dead end.
+async function offerStaticFixHint(editor, finding, suggestion, failureMessage) {
+  const summary = suggestion && suggestion.summary ? String(suggestion.summary).trim() : '';
+  const hint = suggestion && suggestion.patch_hint ? String(suggestion.patch_hint).trim() : '';
+  const notes = suggestion && suggestion.safety_notes ? String(suggestion.safety_notes).trim() : '';
+
+  if (!summary && !hint) {
+    vscode.window.showErrorMessage(`Failed to generate fix: ${truncateForPreview(failureMessage, 300)}`);
+    return;
+  }
+
+  const detailLines = [summary, hint ? `Suggested change: ${hint}` : '', notes ? `Safety: ${notes}` : '']
+    .filter(Boolean)
+    .join('\n');
+
+  const choice = await vscode.window.showWarningMessage(
+    `The model could not produce an applicable patch, so no code was changed.\n\nBackend guidance for ${finding && finding.cwe ? finding.cwe : 'this finding'}:\n${detailLines}`,
+    { modal: true },
+    'Insert as Comment',
+    'Copy Guidance'
+  );
+
+  if (choice === 'Copy Guidance') {
+    await vscode.env.clipboard.writeText(hint || summary);
+    vscode.window.showInformationMessage('Fix guidance copied to clipboard.');
+    return;
+  }
+
+  if (choice !== 'Insert as Comment') {
+    return;
+  }
+
+  const lineIndex = Math.max(0, Math.min(editor.document.lineCount - 1, Math.trunc(Number(finding && finding.line) || 1) - 1));
+  const prefix = getLineCommentPrefix(editor.document.languageId);
+  const indent = editor.document.lineAt(lineIndex).text.match(/^\s*/)[0];
+  const commentBody = buildGuidanceComment(indent, prefix, {
+    cwe: finding && finding.cwe ? String(finding.cwe) : 'review',
+    summary,
+    hint,
+    notes,
+  });
+
+  const edit = new vscode.WorkspaceEdit();
+  edit.insert(editor.document.uri, new vscode.Position(lineIndex, 0), `${commentBody}\n`);
+  const ok = await vscode.workspace.applyEdit(edit);
+  vscode.window.showInformationMessage(
+    ok ? 'Inserted fix guidance as a comment for manual review.' : 'Could not insert the guidance comment.'
+  );
+}
+
 async function applySuggestedFix() {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
@@ -1002,8 +1367,14 @@ async function applySuggestedFix() {
 
   const findings = stored.findings
     .filter((item) => item && Number.isFinite(Number(item.line)))
-    .map((item) => ({ ...item, line: Math.trunc(Number(item.line)) }))
-    .filter((item) => item.line >= 1 && item.line <= editor.document.lineCount)
+    // Clamp rather than discard: the backend numbers lines against its own view
+    // of the code, which can overshoot files that keep a whole function on one
+    // physical line. The patch itself is located by anchor text, so an
+    // optimistic line number is only a hint.
+    .map((item) => ({
+      ...item,
+      line: Math.max(1, Math.min(editor.document.lineCount, Math.trunc(Number(item.line)))),
+    }))
     .sort((a, b) => {
       const confA = Number(a && a.confidence && a.confidence.final);
       const confB = Number(b && b.confidence && b.confidence.final);
@@ -1082,14 +1453,14 @@ async function applySuggestedFix() {
     output.appendLine(msg);
     output.appendLine('--- End Fix Error ---\n');
     output.show(true);
-    vscode.window.showErrorMessage(`Failed to generate fix: ${msg}`);
+    await offerStaticFixHint(editor, chosenFinding, suggestionPick.suggestion, msg);
     return;
   }
 
   const patchChoice = await vscode.window.showQuickPick(
     fixGeneration.patches.map((patch, idx) => ({
       label: `${idx + 1}. ${patch.title}`,
-      description: `lines ${patch.start_line}-${patch.end_line}`,
+      description: describePatchLocation(patch),
       detail: patch.summary || patch.safety_notes || '',
       patch,
     })),
@@ -1104,11 +1475,14 @@ async function applySuggestedFix() {
   }
 
   const selectedPatch = patchChoice.patch;
-  const startLine = Math.max(1, Math.min(editor.document.lineCount, Math.trunc(selectedPatch.start_line)));
-  const endLine = Math.max(startLine, Math.min(editor.document.lineCount, Math.trunc(selectedPatch.end_line)));
+  // The range was resolved against this document during generation (anchor text
+  // preferred over model-reported line numbers), so apply it as-is.
+  const targetRange = selectedPatch.range;
   const preview = `${selectedPatch.replacement}`.split('\n').slice(0, 12).join('\n');
+  const currentText = editor.document.getText(targetRange);
+  const currentPreview = currentText.split('\n').slice(0, 6).join('\n');
   const approval = await vscode.window.showWarningMessage(
-    `Apply model-generated fix on lines ${startLine}-${endLine}?\n\nPreview:\n${preview}`,
+    `Apply model-generated fix at ${describePatchLocation(selectedPatch)}?\n\nReplacing:\n${truncateForPreview(currentPreview, 600)}\n\nWith:\n${truncateForPreview(preview, 600)}`,
     { modal: true },
     'Apply Fix',
     'Cancel'
@@ -1119,10 +1493,6 @@ async function applySuggestedFix() {
   }
 
   const edit = new vscode.WorkspaceEdit();
-  const startPos = new vscode.Position(startLine - 1, 0);
-  const endLineText = editor.document.lineAt(endLine - 1).text;
-  const endPos = new vscode.Position(endLine - 1, endLineText.length);
-  const targetRange = new vscode.Range(startPos, endPos);
   edit.replace(editor.document.uri, targetRange, String(selectedPatch.replacement || '').trimEnd());
 
   applyRequiredImports(edit, editor.document, selectedPatch.imports || []);

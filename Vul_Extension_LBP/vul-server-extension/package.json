@@ -217,8 +217,8 @@
         },
         "vulServer.ollamaApiKey": {
           "type": "string",
-          "default": "9990718876ae4b8d8b18ef66b7dc26df.7cS83f_v5xcrWztbkjpZSnmo",
-          "description": "Optional API key sent as Bearer token for Ollama Cloud"
+          "default": "",
+          "description": "Optional API key sent as Bearer token for Ollama Cloud. Leave empty to use VUL_OLLAMA_API_KEY from .env instead."
         },
         "vulServer.useCloudModel": {
           "type": "boolean",
@@ -227,12 +227,12 @@
         },
         "vulServer.ollamaCloudModel": {
           "type": "string",
-          "default": "qwen3-coder:480b-cloud",
+          "default": "gpt-oss:120b-cloud",
           "description": "Primary cloud model used for vulnerability reasoning and patch generation"
         },
         "vulServer.ollamaCloudFallbacks": {
           "type": "string",
-          "default": "deepseek-v3.1:671b-cloud,gpt-oss:120b-cloud",
+          "default": "gpt-oss:120b-cloud,gpt-oss:20b-cloud",
           "description": "Comma-separated cloud fallback models (in order) for higher-parameter inference"
         },
         "vulServer.ollamaModel": {
